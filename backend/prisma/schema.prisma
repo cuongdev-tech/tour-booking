@@ -1,0 +1,231 @@
+// Prisma schema for Tour Booking — PostgreSQL (TourBookingDB, schema public)
+// NOTE (theo ảnh chốt):
+// 1. User.email đã @unique -> PostgreSQL/Prisma tự tạo unique index, KHÔNG thêm @@index([email]) thừa.
+// 2. Payment khi tạo booking luôn PENDING cho cả CASH/BANK_TRANSFER/CARD (chưa có gateway).
+// 3. Tạo booking phải dùng Prisma $transaction (Booking + BookingGuest + Payment + giảm seats + tăng coupon.usedCount).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TourCategory {
+  Beach
+  Mountains
+  Culture
+  Relaxation
+}
+
+enum TourStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CARD
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum CouponType {
+  PERCENT
+  FIXED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+model User {
+  id           String     @id @default(cuid())
+  name         String
+  email        String     @unique
+  passwordHash String
+  role         Role       @default(CUSTOMER)
+  avatar       String?
+  phone        String?
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  bookings  Booking[]
+  reviews   Review[]
+  favorites Favorite[]
+}
+
+model Tour {
+  id             String       @id @default(cuid())
+  slug           String       @unique
+  title          String
+  description    String       @db.Text
+  category       TourCategory
+  destination    String
+  departureLocation String    @default("")
+  transportation String[]     @default([])
+  includedServices String[]   @default([])
+  excludedServices String[]   @default([])
+  images         String[]
+  duration       String
+  price          Int
+  itinerary      Json           @default("[]")
+  minGuests      Int          @default(1)
+  maxGuests      Int          @default(20)
+  availableSeats Int          @default(30)
+  rating         Float        @default(0)
+  reviewCount    Int          @default(0)
+  featured       Boolean      @default(false)
+  status         TourStatus   @default(ACTIVE)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  bookings  Booking[]
+  reviews   Review[]
+  favorites Favorite[]
+
+  @@index([destination])
+  @@index([departureLocation])
+  @@index([category])
+  @@index([status])
+  @@index([featured])
+}
+
+model Coupon {
+  id         String     @id @default(cuid())
+  code       String     @unique
+  type       CouponType
+  value      Int
+  minOrder   Int        @default(0)
+  expiresAt  DateTime
+  usageLimit Int?
+  usedCount  Int        @default(0)
+  active     Boolean    @default(true)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  bookings Booking[]
+}
+
+model Booking {
+  id            String        @id @default(cuid())
+  bookingCode   String        @unique
+  userId        String
+  tourId        String
+  couponId      String?
+  travelDate    DateTime
+  guests        Int
+  customerName  String
+  customerEmail String
+  customerPhone String
+  note          String?
+  subtotal      Int
+  discount      Int           @default(0)
+  total         Int
+  bookingStatus BookingStatus @default(PENDING)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tour   Tour    @relation(fields: [tourId], references: [id], onDelete: Restrict)
+  coupon Coupon? @relation(fields: [couponId], references: [id], onDelete: SetNull)
+
+  guestsList BookingGuest[]
+  payment    Payment?
+  reviews    Review[]
+
+  @@index([userId])
+  @@index([tourId])
+  @@index([bookingStatus])
+  @@index([travelDate])
+}
+
+model BookingGuest {
+  id          String    @id @default(cuid())
+  bookingId   String
+  fullName    String
+  dateOfBirth DateTime?
+  gender      Gender?
+  phone       String?
+  email       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  bookingId       String        @unique
+  amount          Int
+  method          PaymentMethod
+  status          PaymentStatus @default(PENDING)
+  transactionCode String?       @unique
+  paidAt          DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  userId    String
+  tourId    String
+  bookingId String   @unique
+  rating    Int
+  comment   String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tour    Tour    @relation(fields: [tourId], references: [id], onDelete: Cascade)
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([tourId])
+  @@index([userId])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  tourId    String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tour Tour @relation(fields: [tourId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tourId])
+  @@index([userId])
+  @@index([tourId])
+}

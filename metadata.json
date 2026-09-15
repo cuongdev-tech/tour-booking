@@ -1,0 +1,5 @@
+{
+  "name": "Tour Booking",
+  "description": "Full-stack travel tour booking website: React + Express + PostgreSQL + Prisma, with JWT auth, transactional bookings, coupons, reviews, favorites and admin dashboard.",
+  "requestFramePermissions": []
+}
