@@ -1,6 +1,6 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { CalendarCheck, LayoutDashboard, Mail, Map, MessageSquareText, Ticket, Users } from 'lucide-react';
+import { CalendarCheck, LayoutDashboard, Mail, Map, MessageSquareText, Ticket, Users, Wallet } from 'lucide-react';
 import { PageContainer } from '../components/ui/kit';
 
 export function AdminLayout() {
@@ -8,7 +8,8 @@ export function AdminLayout() {
   const { pathname } = useLocation();
 
   const tabs = [
-    { to: '/admin', label: t('admin.dashboard'), icon: LayoutDashboard, exact: true },
+    { to: '/admin', label: 'Tổng quan', icon: LayoutDashboard, exact: true },
+    { to: '/admin/doanh-thu-ngay', label: 'Doanh thu ngày', icon: Wallet, exact: false },
     { to: '/admin/tours', label: t('admin.tours'), icon: Map, exact: false },
     { to: '/admin/bookings', label: t('admin.bookings'), icon: CalendarCheck, exact: false },
     { to: '/admin/users', label: t('admin.users'), icon: Users, exact: false },

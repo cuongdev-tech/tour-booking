@@ -75,9 +75,33 @@ function computeFare(opts: {
   return { adults, children, subtotal, addonsTotal };
 }
 
+/** Full years of age at a reference date (UTC calendar days). */
+function ageAt(dob: Date, at: Date): number {
+  let age = at.getUTCFullYear() - dob.getUTCFullYear();
+  const m = at.getUTCMonth() - dob.getUTCMonth();
+  if (m < 0 || (m === 0 && at.getUTCDate() < dob.getUTCDate())) age -= 1;
+  return age;
+}
+
+/**
+ * Child-ticket eligibility: `isChild` is customer-declared, so it must be
+ * backed by a date of birth whose age at travel fits the tour's childMaxAge
+ * (under 18 when the tour sets no explicit limit).
+ */
+function assertChildAges(guestsList: GuestInput[], childMaxAge: number | null, travelDate: Date): void {
+  const maxAge = childMaxAge ?? 17;
+  for (const g of guestsList) {
+    if (!g.isChild) continue;
+    if (!g.dateOfBirth) throw new AppError(400, 'Child date of birth is required');
+    const dob = new Date(g.dateOfBirth);
+    if (Number.isNaN(dob.getTime())) throw new AppError(400, 'Child date of birth is required');
+    const age = ageAt(dob, travelDate);
+    if (age < 0 || age > maxAge) throw new AppError(400, 'Child age is not eligible for child tickets');
+  }
+}
+
 /** Validate requested add-on ids against the tour's current catalogue. */
-function resolveAddonIds(tourAddons: TourAddon[], addonIds: string[] | undefined): TourAddon[] {
-  const ids = [...new Set((addonIds ?? []).map((s) => s.trim()).filter(Boolean))];
+function resolveAddonIds(tourAddons: TourAddon[], addonIds: string[] | undefined): TourAddon[] {  const ids = [...new Set((addonIds ?? []).map((s) => s.trim()).filter(Boolean))];
   return ids.map((id) => {
     const found = tourAddons.find((a) => a.id === id);
     if (!found) throw new AppError(400, 'Selected add-ons are invalid');
@@ -122,6 +146,8 @@ export async function createBooking(input: CreateBookingInput) {
     if (guestCount > freshTour.maxGuests) throw new AppError(400, `Tour allows at most ${freshTour.maxGuests} guest(s)`);
     if (guestCount > freshTour.availableSeats)
       throw new AppError(400, `Only ${freshTour.availableSeats} seat(s) left`);
+    // Child fares are customer-declared: back every isChild with a real age.
+    assertChildAges(input.guestsList, freshTour.childMaxAge, travelDate);
 
     // Per-date inventory: dates WITHOUT a managed row stay open (global seats
     // only); dates WITH a row are capped. Row is locked like the tour row.
@@ -351,7 +377,10 @@ export async function updateBooking(bookingId: string, userId: string, input: Up
     throw new AppError(400, 'Only upcoming bookings can be modified');
   }
   if (booking.payment && booking.payment.status !== 'PENDING') {
-    throw new AppError(400, 'Paid bookings cannot be modified');
+    throw new AppError(
+      400,
+      booking.payment.status === 'PAID' ? 'Paid bookings cannot be modified' : 'Payment is being processed and cannot be modified',
+    );
   }
 
   const todayUtc = (() => {
@@ -386,6 +415,22 @@ export async function updateBooking(bookingId: string, userId: string, input: Up
     if (!tour || tour.status !== 'ACTIVE') throw new AppError(400, 'Tour is no longer available');
     if (newCount < tour.minGuests) throw new AppError(400, `Tour requires at least ${tour.minGuests} guest(s)`);
     if (newCount > tour.maxGuests) throw new AppError(400, `Tour allows at most ${tour.maxGuests} guest(s)`);
+    // Child fares are customer-declared: back every isChild with a real age.
+    assertChildAges(newGuestsList, tour.childMaxAge, newTravelDate);
+
+    // Re-check money state inside the transaction: an admin capture (PAID)
+    // landing between the pre-check and here must abort — the pending payment
+    // amount follows the total and must never move after capture.
+    if (booking.payment) {
+      await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "bookingId" = ${bookingId} FOR UPDATE`;
+      const freshPayment = await tx.payment.findUnique({ where: { bookingId } });
+      if (!freshPayment || freshPayment.status !== 'PENDING') {
+        throw new AppError(
+          400,
+          freshPayment?.status === 'PAID' ? 'Paid bookings cannot be modified' : 'Payment is being processed and cannot be modified',
+        );
+      }
+    }
 
     const delta = newCount - booking.guests;
     if (delta > 0 && delta > tour.availableSeats) {
@@ -471,6 +516,15 @@ export async function updateBooking(bookingId: string, userId: string, input: Up
     }
     const total = subtotal - discount + fare.addonsTotal;
 
+    // Dropping a coupon that held a usage slot must return the quota
+    // (mirrors cancelBooking), otherwise the slot leaks forever.
+    if (booking.couponId && !couponId) {
+      await tx.coupon.updateMany({
+        where: { id: booking.couponId, usedCount: { gt: 0 } },
+        data: { usedCount: { decrement: 1 } },
+      });
+    }
+
     const updated = await tx.booking.update({
       where: { id: bookingId },
       data: {
@@ -550,6 +604,14 @@ export async function cancelBooking(bookingId: string, userId: string, isAdmin: 
   }
 
   return prisma.$transaction(async (tx) => {
+    // Lock every row this cancel touches so concurrent create/cancel/admin
+    // actions serialize instead of double-restoring seats or coupon quota.
+    const cancelDay = toCalendarDay(booking.travelDate);
+    await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${booking.tourId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "TourDate" WHERE "tourId" = ${booking.tourId} AND "date" = ${cancelDay} FOR UPDATE`;
+    if (booking.couponId) {
+      await tx.$queryRaw`SELECT "id" FROM "Coupon" WHERE "id" = ${booking.couponId} FOR UPDATE`;
+    }
     const updated = await tx.booking.update({
       where: { id: bookingId },
       data: { bookingStatus: 'CANCELLED' },
@@ -560,7 +622,6 @@ export async function cancelBooking(bookingId: string, userId: string, isAdmin: 
       data: { availableSeats: { increment: booking.guests } },
     });
     // Release the per-date bucket (if the travel day is managed).
-    const cancelDay = toCalendarDay(booking.travelDate);
     const cancelRow = await tx.tourDate.findUnique({
       where: { tourId_date: { tourId: booking.tourId, date: cancelDay } },
     });

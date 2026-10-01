@@ -12,3 +12,14 @@ export function startOfTodayLocal(): number {
   d.setHours(0, 0, 0, 0);
   return d.getTime();
 }
+
+/**
+ * Start of today in UTC as a timestamp. The backend compares travel days in
+ * UTC (date-only strings parse as UTC midnight), so UI pre-validation must
+ * use the same frame — otherwise a date the UI accepts could fail server-side
+ * (or vice versa) near midnight across timezones.
+ */
+export function startOfTodayUtc(): number {
+  const d = new Date();
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}

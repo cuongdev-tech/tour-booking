@@ -56,6 +56,9 @@ export interface Translation {
     ctaTitle: string;
     ctaSubtitle: string;
     ctaButton: string;
+    recommendedTitle: string;
+    recommendedSubtitle: string;
+    recentTitle: string;
   };
   destinations: {
     title: string;
@@ -135,6 +138,14 @@ export interface Translation {
     travelerDefault: string;
     decreaseGuests: string;
     increaseGuests: string;
+    helpful: string;
+    openMap: string;
+    childPrice: string;
+    childMaxAge: string;
+    adults: string;
+    children: string;
+    freeCancelUntil: string;
+    freeCancelHours: string;
   };
   itinerary: {
     title: string;
@@ -184,6 +195,9 @@ export interface Translation {
     browseTours: string;
     missingInfo: string;
     bookingFailed: string;
+    addons: string;
+    addonPerPerson: string;
+    addonPerBooking: string;
   };
   bookingSuccess: {
     title: string;
@@ -279,6 +293,9 @@ export interface Translation {
     modifySuccess: string;
     modifyFailed: string;
     invoice: string;
+    childDob: string;
+    reviewPhotos: string;
+    addPhotos: string;
   };
   favorites: {
     title: string;
@@ -366,6 +383,17 @@ export interface Translation {
     deleted: string;
     deleteFailed: string;
     loadFailed: string;
+    childPrice: string;
+    childPriceHint: string;
+    childMaxAge: string;
+    freeCancelHours: string;
+    freeCancelHint: string;
+    addons: string;
+    addAddon: string;
+    noAddons: string;
+    addonName: string;
+    addonNamePh: string;
+    perPerson: string;
   };
   adminBookings: {
     count: string;
@@ -387,6 +415,7 @@ export interface Translation {
     updateFailed: string;
     loadFailed: string;
     selfActionForbidden: string;
+    lastAdmin: string;
     user: string;
     role: string;
     status: string;
@@ -491,6 +520,9 @@ export interface Translation {
     passwordRequired: string;
     guestNameRequired: string;
     fullNameRequired: string;
+    childDobRequired: string;
+    dobInvalid: string;
+    childAgeInvalid: string;
   };
   backendErrors: {
     couponNotExist: string;
@@ -519,6 +551,7 @@ export interface Translation {
     tourStartedNoModify: string;
     upcomingOnlyModify: string;
     paidNoModify: string;
+    paymentLocked: string;
     capacityBelowBooked: string;
     alreadyReviewed: string;
     completedOnlyReview: string;
@@ -538,6 +571,41 @@ export interface Translation {
     freeCancelEnded?: string;
     ownVote?: string;
     adminNoBooking?: string;
+  };
+  pay: {
+    paid: string;
+    rejected: string;
+    scanHint: string;
+    payNow: string;
+    waiting: string;
+    demoBadge: string;
+    bank: string;
+    account: string;
+    content: string;
+    infoFailed: string;
+    claimed: string;
+    claimedBtn: string;
+    verifyHint: string;
+    confirmReceived: string;
+  };
+  notif: {
+    title: string;
+    empty: string;
+    transferClaimed: string;
+    paidConfirmed: string;
+    refunded: string;
+    transferFailed: string;
+    viewAll: string;
+  };
+  verify: {
+    title: string;
+    notFound: string;
+    valid: string;
+    needPaymentTitle: string;
+    invalid: string;
+    operatorHint: string;
+    generating: string;
+    needPayment: string;
   };
   enums: {
     categoryBeach: string;

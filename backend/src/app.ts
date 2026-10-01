@@ -18,8 +18,12 @@ import tourRoutes from './routes/tour.routes.js';
  */
 function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return true; // curl / non-browser clients have no Origin
-  const fixed = [env.frontendUrl, 'http://localhost:3000', 'http://localhost:5173'];
+  const fixed = [env.frontendUrl, ...env.extraOrigins, 'http://localhost:3000', 'http://localhost:5173'];
   if (fixed.includes(origin)) return true;
+  // Open LAN/localhost is a DEV convenience (phone testing). Production serves
+  // the exact configured origins only — otherwise any LAN page could call the
+  // API with the user's cookies/credentials.
+  if (env.isProduction) return false;
   try {
     const host = new URL(origin).hostname;
     if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') return true;
@@ -33,6 +37,7 @@ function isAllowedOrigin(origin: string | undefined): boolean {
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', env.trustProxy);
   app.use(securityHeaders);
   app.use(cors({ origin: (origin, cb) => cb(null, isAllowedOrigin(origin)), credentials: true }));
   app.use(express.json({ limit: '1mb' }));

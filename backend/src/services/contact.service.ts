@@ -30,7 +30,7 @@ export async function adminListContactMessages(page?: unknown, limit?: unknown, 
     prisma.contactMessage.count({ where }),
     prisma.contactMessage.findMany({ where, skip: (p - 1) * l, take: l, orderBy: { createdAt: 'desc' } }),
   ]);
-  const unread = await prisma.contactMessage.count({ where: { isRead: false } });
+  const unread = await prisma.contactMessage.count({ where: { isRead: false, ...idFilter } });
   return {
     data: messages,
     pagination: { page: p, limit: l, total, totalPages: Math.max(1, Math.ceil(total / l)) },

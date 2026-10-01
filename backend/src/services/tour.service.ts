@@ -90,7 +90,7 @@ export async function matchTextIds(table: TextTable, column: string, term: strin
   if (!norm) return [];
   const rows = await prisma.$queryRaw<Array<{ id: string }>>`
     SELECT "id" FROM ${Prisma.raw(`"${table}"`)}
-    WHERE translate(lower(${Prisma.raw(`"${column}"`)}), ${VI_SRC}, ${VI_DST}) LIKE ${likePattern(norm)}
+    WHERE translate(lower(${Prisma.raw(`"${column}"`)}), ${VI_SRC}, ${VI_DST}) LIKE ${likePattern(norm)} ESCAPE '\'
   `;
   return rows.map((r) => r.id);
 }

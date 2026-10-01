@@ -32,7 +32,7 @@ export function Bookings() {
   const [deleteReviewId, setDeleteReviewId] = useState<string | null>(null);
   const [editBooking, setEditBooking] = useState<Booking | null>(null);
   const [editDate, setEditDate] = useState('');
-  const [editGuests, setEditGuests] = useState<Array<{ fullName: string; phone: string; email: string; isChild: boolean }>>([]);
+  const [editGuests, setEditGuests] = useState<Array<{ fullName: string; phone: string; email: string; isChild: boolean; dob: string }>>([]);
   const [editNote, setEditNote] = useState('');
   const [submittingEdit, setSubmittingEdit] = useState(false);
   const [invoiceId, setInvoiceId] = useState<string | null>(null);
@@ -207,6 +207,7 @@ export function Bookings() {
         email: names[i]?.email ?? '',
         // Preserve ticket types (backend reprices NL/TE fares on edit).
         isChild: names[i]?.isChild ?? false,
+        dob: names[i]?.dateOfBirth?.slice(0, 10) ?? '',
       })),
     );
     setEditNote(b.note ?? '');
@@ -215,7 +216,7 @@ export function Bookings() {
   const setEditCount = (n: number) => {
     setEditGuests((prev) =>
       prev.length < n
-        ? [...prev, ...Array.from({ length: n - prev.length }, () => ({ fullName: '', phone: '', email: '', isChild: false }))]
+        ? [...prev, ...Array.from({ length: n - prev.length }, () => ({ fullName: '', phone: '', email: '', isChild: false, dob: '' }))]
         : prev.slice(0, n),
     );
   };
@@ -233,6 +234,11 @@ export function Bookings() {
       toast.error(apiErrorMessage(null, t('validation.guestNameRequired')));
       return;
     }
+    // Child rows must carry a birth date (backend verifies age vs childMaxAge).
+    if (editGuests.some((g) => g.isChild && (!g.dob || Number.isNaN(Date.parse(g.dob))))) {
+      toast.error(apiErrorMessage(null, t('validation.childDobRequired')));
+      return;
+    }
     const limits = editBooking.tour;
     if (limits && (editGuests.length < limits.minGuests || editGuests.length > limits.maxGuests)) {
       toast.error(
@@ -247,6 +253,7 @@ export function Bookings() {
         guestsList: editGuests.map((g) => ({
           fullName: g.fullName.trim(),
           isChild: g.isChild,
+          dateOfBirth: g.dob || undefined,
           phone: g.phone.trim() || undefined,
           email: g.email.trim() || undefined,
         })),
@@ -502,7 +509,8 @@ export function Bookings() {
                 />
                 <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
                   {editGuests.map((g, i) => (
-                    <div key={i} className="flex items-start gap-2">
+                    <div key={i}>
+                      <div className="flex items-start gap-2">
                       <div className="min-w-0 flex-1">
                         <Field label={t('checkout.travelerName', { index: i + 1 })}>
                           <Input
@@ -521,6 +529,21 @@ export function Bookings() {
                           ? (t('tourDetails.children', { defaultValue: 'Trẻ em' }) as string)
                           : (t('tourDetails.adults', { defaultValue: 'Người lớn' }) as string)}
                       </span>
+                      </div>
+                      {g.isChild && (
+                        <div className="mt-2">
+                          <Field label={t('bookings.childDob', { defaultValue: 'Ngày sinh của trẻ' }) as string}>
+                            <Input
+                              type="date"
+                              value={g.dob}
+                              max={todayLocalInput()}
+                              onChange={(e) =>
+                                setEditGuests((prev) => prev.map((x, j) => (j === i ? { ...x, dob: e.target.value } : x)))
+                              }
+                            />
+                          </Field>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

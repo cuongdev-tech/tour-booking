@@ -1,173 +1,247 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { api, apiErrorMessage } from '../../services/api';
 import type { Pagination, Review } from '../../types';
-import { Badge, Button, Modal, Stars, TableCard, TableEmpty, Td, Th } from '../../components/ui/kit';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { AdminPagination } from './Pagination';
 
+type Tab = 'all' | 'pending' | 'visible' | 'hidden';
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: 'all', label: 'Tất cả' },
+  { id: 'pending', label: 'Chờ duyệt' },
+  { id: 'visible', label: 'Hiện' },
+  { id: 'hidden', label: 'Ẩn' },
+];
+
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 export function ReviewsManage() {
-  const { t } = useTranslation();
+  const [tab, setTab] = useState<Tab>('all');
   const [reviews, setReviews] = useState<Review[]>([]);
+  const [counts, setCounts] = useState<{ total: number; pending: number; visible: number; hidden: number } | null>(null);
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<Pagination | null>(null);
+  const [loading, setLoading] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
-  const [inspect, setInspect] = useState<Review | null>(null);
-  const [hiddenFilter, setHiddenFilter] = useState('');
+  const [replies, setReplies] = useState<Record<string, string>>({});
+  const [sending, setSending] = useState<string | null>(null);
 
-  const load = (p: number = page, h: string = hiddenFilter) =>
+  const loadCounts = () =>
     api
-      .get('/admin/reviews', { params: { page: p, limit: 10, ...(h !== '' ? { hidden: h } : {}) } })
+      .get('/admin/reviews/counts')
+      .then((r) => setCounts(r.data))
+      .catch(() => setCounts(null));
+
+  const load = (t: Tab = tab, p: number = page) => {
+    setLoading(true);
+    const params: Record<string, unknown> = { page: p, limit: 10 };
+    if (t !== 'all') params.tab = t;
+    // visible/hidden backend hiểu qua tab; pending = đang hiện + chưa trả lời
+    api
+      .get('/admin/reviews', { params })
       .then((r) => {
         setReviews(r.data.data);
         setPagination(r.data.pagination);
       })
-      .catch((err) => toast.error(apiErrorMessage(err, t('adminReviews.loadFailed'))));
-  useEffect(() => { void load(page, hiddenFilter); }, [page, hiddenFilter]);
+      .catch((err) => toast.error(apiErrorMessage(err, 'Không tải được đánh giá')))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    void loadCounts();
+  }, []);
+  useEffect(() => {
+    void load(tab, page);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, page]);
+
+  const switchTab = (t: Tab) => {
+    setTab(t);
+    setPage(1);
+  };
 
   const setHidden = async (id: string, hidden: boolean) => {
     try {
       await api.patch(`/admin/reviews/${id}`, { hidden });
-      toast.success(t('adminReviews.updated'));
+      toast.success(hidden ? 'Đã ẩn đánh giá' : 'Đã duyệt/hiện đánh giá');
       await load();
+      await loadCounts();
     } catch (err) {
-      toast.error(apiErrorMessage(err, t('adminReviews.updateFailed')));
+      toast.error(apiErrorMessage(err, 'Cập nhật thất bại'));
     }
   };
 
   const remove = async (id: string) => {
     try {
       await api.delete(`/admin/reviews/${id}`);
-      toast.success(t('adminReviews.deleted'));
+      toast.success('Đã xóa đánh giá');
       setDeleteId(null);
+      await loadCounts();
       if (reviews.length === 1 && page > 1) setPage(page - 1);
       else await load();
     } catch (err) {
-      toast.error(apiErrorMessage(err, t('adminReviews.deleteFailed')));
+      toast.error(apiErrorMessage(err, 'Xóa thất bại'));
       setDeleteId(null);
     }
   };
 
+  const sendReply = async (id: string) => {
+    const text = (replies[id] ?? '').trim();
+    if (!text) {
+      toast.error('Vui lòng nhập nội dung trả lời');
+      return;
+    }
+    setSending(id);
+    try {
+      await api.patch(`/admin/reviews/${id}/reply`, { reply: text });
+      toast.success('Đã trả lời đánh giá');
+      setReplies((prev) => ({ ...prev, [id]: '' }));
+      await load();
+      await loadCounts();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Trả lời thất bại'));
+    } finally {
+      setSending(null);
+    }
+  };
+
+  const countFor = (t: Tab): number => {
+    if (!counts) return 0;
+    if (t === 'all') return counts.total;
+    if (t === 'pending') return counts.pending;
+    if (t === 'visible') return counts.visible;
+    return counts.hidden;
+  };
+
   return (
-    <div>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-bold tracking-tight text-slate-900">{t('adminReviews.title')}</h2>
-        <div className="flex items-center gap-3">
-          <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              checked={hiddenFilter === '1'}
-              onChange={(e) => { setHiddenFilter(e.target.checked ? '1' : ''); setPage(1); }}
-              className="h-4 w-4 rounded border-slate-300 accent-orange-700"
-            />
-            {t('adminReviews.hidden')}
-          </label>
-          <p className="text-sm tabular-nums text-slate-500">{t('adminReviews.count', { count: pagination?.total ?? reviews.length })}</p>
-        </div>
+    <div className="min-w-0 antialiased">
+      <h2 className="text-[22px] leading-7 font-extrabold tracking-tight text-neutral-900 uppercase">Duyệt đánh giá</h2>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {TABS.map((t) => {
+          const active = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => switchTab(t.id)}
+              className={`inline-flex min-h-9 items-center rounded-full px-4 py-1.5 text-[13px] font-medium transition-colors ${
+                active
+                  ? 'bg-neutral-900 text-white'
+                  : 'border border-neutral-300 bg-white text-neutral-600 hover:border-neutral-400 hover:text-neutral-900'
+              }`}
+            >
+              {t.label} ({countFor(t.id)})
+            </button>
+          );
+        })}
       </div>
-      <TableCard>
-        <table className="w-full min-w-200 text-left">
-          <thead className="bg-slate-50">
-            <tr>
-              <Th>{t('adminBookings.tour')}</Th>
-              <Th>{t('adminUsers.user')}</Th>
-              <Th>{t('bookings.reviewRating')}</Th>
-              <Th>{t('bookings.reviewComment')}</Th>
-              <Th>{t('adminReviews.hidden')}</Th>
-              <Th right>{t('admin.actions')}</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {reviews.length === 0 && (
-              <TableEmpty colSpan={6}>{t('tours.emptyTitle')}</TableEmpty>
-            )}
-            {reviews.map((r) => (
-              <tr key={r.id} className="transition-colors hover:bg-slate-50/60">
-                <Td className="max-w-50 truncate font-medium text-slate-900">
-                  {r.tour ? (
-                    <Link to={`/tour/${r.tour.id}`} className="rounded transition-colors hover:text-orange-700 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700">
-                      {r.tour.title}
-                    </Link>
-                  ) : r.tourId}
-                </Td>
-                <Td className="max-w-40 truncate">{r.user?.name ?? r.userId}</Td>
-                <Td><Stars value={r.rating} /></Td>
-                <Td className="max-w-70">
-                  <button
-                    type="button"
-                    onClick={() => setInspect(r)}
-                    className="line-clamp-2 rounded text-left text-sm text-slate-600 transition-colors hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700"
-                    title={r.comment ?? ''}
-                  >
-                    {r.comment || '—'}
-                  </button>
-                </Td>
-                <Td>
-                  <Badge className={r.hidden ? 'bg-slate-200 text-slate-600' : 'bg-emerald-100 text-emerald-800'}>
-                    {r.hidden ? t('adminReviews.hidden') : `${r.rating} / 5`}
-                  </Badge>
-                </Td>
-                <Td right>
-                  <span className="inline-flex items-center gap-1">
-                    <Button variant="ghost" onClick={() => void setHidden(r.id, !r.hidden)} className="px-2 text-orange-700 hover:bg-orange-50">
-                      {r.hidden ? t('adminReviews.unhide') : t('adminReviews.hide')}
-                    </Button>
-                    <Button variant="ghost" onClick={() => setDeleteId(r.id)} className="px-2 text-red-600 hover:bg-red-50">
-                      {t('adminReviews.delete')}
-                    </Button>
-                  </span>
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </TableCard>
-      <AdminPagination pagination={pagination} onPage={setPage} />
-      <ConfirmDialog
-        open={deleteId !== null}
-        title={t('adminReviews.deleteTitle')}
-        message={t('adminReviews.deleteMessage')}
-        confirmLabel={t('adminReviews.delete')}
-        cancelLabel={t('adminTours.cancel')}
-        onClose={() => setDeleteId(null)}
-        onConfirm={() => deleteId && void remove(deleteId)}
-      />
-      <Modal open={inspect !== null} onClose={() => setInspect(null)} label={t('bookings.reviewComment')} wide>
-        {inspect && (
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <Stars value={inspect.rating} />
-              <Badge className={inspect.hidden ? 'bg-slate-200 text-slate-600' : 'bg-emerald-100 text-emerald-800'}>
-                {inspect.hidden ? t('adminReviews.hidden') : `${inspect.rating} / 5`}
-              </Badge>
+
+      <div className="mt-4 space-y-4">
+        {loading && reviews.length === 0 ? (
+          <div className="rounded-xl border border-neutral-200 bg-white p-10 text-center text-[13px] font-normal text-neutral-400 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+            Đang tải đánh giá...
+          </div>
+        ) : reviews.length === 0 ? (
+          <div className="rounded-xl border border-neutral-200 bg-white p-10 text-center text-[13px] font-normal text-neutral-400 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+            Chưa có đánh giá nào trong mục này.
+          </div>
+        ) : null}
+        {reviews.map((r) => (
+          <article key={r.id} className="rounded-xl border border-neutral-200 bg-white p-4 shadow-[0_1px_2px_rgba(0,0,0,0.04)] sm:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <p className="text-[14px] font-bold text-neutral-900">
+                {r.user?.name ?? 'Khách'} — {r.rating} sao — {r.tour?.title ?? r.tourId}
+              </p>
+              <p className="text-[12px] font-normal whitespace-nowrap text-neutral-400 tabular-nums">
+                {formatTime(r.createdAt)} | {r.hidden ? 'Ẩn' : 'Hiện'} | {r.helpfulCount ?? 0} hữu ích
+              </p>
             </div>
-            <p className="mt-1 text-sm font-semibold text-slate-900">{inspect.tour?.title}</p>
-            <p className="text-xs text-slate-400">{inspect.user?.name}</p>
-            <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-slate-600">{inspect.comment || '—'}</p>
-            {Array.isArray(inspect.images) && inspect.images.length > 0 && (
-              <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-                {inspect.images.map((src, i) => (
-                  <img key={`${inspect.id}-img-${i}`} src={src} alt="" loading="lazy" className="h-20 w-28 shrink-0 rounded-xl border border-slate-200 object-cover" />
+            <p className="mt-2 text-[13px] font-normal text-neutral-600">{r.comment || '—'}</p>
+            {Array.isArray(r.images) && r.images.length > 0 && (
+              <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+                {r.images.map((src, i) => (
+                  <img
+                    key={`${r.id}-img-${i}`}
+                    src={src}
+                    alt=""
+                    loading="lazy"
+                    className="h-16 w-24 shrink-0 rounded-xl border border-slate-200 object-cover"
+                  />
                 ))}
               </div>
             )}
-            <p className="mt-2 text-xs tabular-nums text-slate-400">
-              👍 {inspect.helpfulCount ?? 0}
-            </p>
-            <div className="mt-6 flex flex-wrap justify-end gap-2">
-              <Button variant="ghost" onClick={() => { void setHidden(inspect.id, !inspect.hidden); setInspect(null); }} className="text-orange-700 hover:bg-orange-50">
-                {inspect.hidden ? t('adminReviews.unhide') : t('adminReviews.hide')}
-              </Button>
-              <Button variant="ghost" onClick={() => { setDeleteId(inspect.id); setInspect(null); }} className="text-red-600 hover:bg-red-50">
-                {t('adminReviews.delete')}
-              </Button>
-              <Button variant="secondary" onClick={() => setInspect(null)}>{t('bookings.dialogCancel')}</Button>
+            {r.adminReply && (
+              <div className="mt-3 rounded-xl bg-neutral-50 p-3 text-sm">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-neutral-500">Phản hồi của bạn</p>
+                <p className="mt-1 text-[13px] font-normal text-neutral-700">{r.adminReply}</p>
+              </div>
+            )}
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {r.hidden ? (
+                <button
+                  type="button"
+                  onClick={() => void setHidden(r.id, false)}
+                  className="inline-flex min-h-9 items-center rounded-full bg-emerald-600 px-3 py-1.5 text-[12px] font-bold text-white hover:bg-emerald-700"
+                >
+                  Duyệt/Hiện
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void setHidden(r.id, true)}
+                  className="inline-flex min-h-9 items-center rounded-full border border-neutral-300 px-3 py-1.5 text-[12px] font-medium text-neutral-600 hover:bg-neutral-50"
+                >
+                  Ẩn
+                </button>
+              )}
+
+              <input
+                value={replies[r.id] ?? ''}
+                onChange={(e) => setReplies((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                placeholder="Trả lời review..."
+                aria-label="Trả lời review"
+                className="min-h-10 min-w-40 flex-1 rounded-lg border border-neutral-200 px-3.5 text-[13px] font-normal outline-none placeholder:text-neutral-400 focus:border-neutral-900"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void sendReply(r.id);
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => void sendReply(r.id)}
+                disabled={sending === r.id}
+                className="inline-flex min-h-10 items-center rounded-lg bg-neutral-900 px-4 py-2 text-[13px] font-bold text-white hover:bg-neutral-700 disabled:opacity-50"
+              >
+                {sending === r.id ? 'Đang gửi...' : 'Trả lời'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeleteId(r.id)}
+                className="inline-flex min-h-9 items-center rounded-full border border-red-400 px-3 py-1.5 text-[12px] font-medium text-red-500 hover:bg-red-50"
+              >
+                Xóa
+              </button>
             </div>
-          </div>
-        )}
-      </Modal>
+          </article>
+        ))}
+      </div>
+
+      <AdminPagination pagination={pagination} onPage={setPage} />
+      <ConfirmDialog
+        open={deleteId !== null}
+        title="Xóa đánh giá?"
+        message="Điểm tour sẽ được tính lại. Không thể hoàn tác."
+        confirmLabel="Xóa"
+        cancelLabel="Hủy"
+        onClose={() => setDeleteId(null)}
+        onConfirm={() => deleteId && void remove(deleteId)}
+      />
     </div>
   );
 }

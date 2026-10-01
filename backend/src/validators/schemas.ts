@@ -37,7 +37,8 @@ export const updateProfileSchema = z.object({
 
 const guestSchema = z.object({
   fullName: z.string().min(2, 'Guest name is required').max(100),
-  dateOfBirth: z.string().datetime().optional().or(z.literal('')),
+  // Date-only (YYYY-MM-DD, as sent by <input type="date">) or full ISO.
+  dateOfBirth: z.string().refine((v) => v === '' || !Number.isNaN(Date.parse(v)), 'Invalid date of birth').optional().or(z.literal('')),
   gender: z.enum(['MALE', 'FEMALE', 'OTHER']).optional(),
   isChild: z.boolean().default(false),
   phone: z.string().max(20).optional().or(z.literal('')),
@@ -293,6 +294,10 @@ export const updatePaymentStatusSchema = z.object({
 
 export const updateReviewVisibilitySchema = z.object({
   hidden: z.boolean(),
+});
+
+export const replyReviewSchema = z.object({
+  reply: z.string().trim().min(1, 'Reply must not be empty').max(2000),
 });
 
 export const updateUserSchema = z.object({

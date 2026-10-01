@@ -14,7 +14,7 @@ import { formatDateStr } from '../i18n/format';
 import { formatCurrency, type Tour } from '../types';
 import { Button, Card, EmptyState, Field, Input, PageContainer, QuantityStepper, Skeleton, Steps, Textarea } from '../components/ui/kit';
 import { useDocumentMeta } from '../hooks/useDocumentMeta';
-import { startOfTodayLocal } from '../utils/date';
+import { startOfTodayUtc, todayLocalInput } from '../utils/date';
 
 export function Checkout() {
   const { t } = useTranslation();
@@ -45,6 +45,9 @@ export function Checkout() {
       // Row type is derived from the counts (first `adults` rows are adults),
       // so the form always carries an explicit flag (backend defaults too).
       isChild: z.boolean(),
+      // Child rows must carry a date of birth: the backend verifies the age
+      // against the tour's childMaxAge (no self-declared child fares).
+      dob: z.string().optional(),
     });
     return z.object({
       customerName: z.string().min(2, t('validation.fullNameRequired')).max(100),
@@ -64,6 +67,12 @@ export function Checkout() {
   const [discount, setDiscount] = useState(0);
   const [couponMsg, setCouponMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // Per-date seats for the picked day (mirrors TourDetails): managed dates use
+  // their own bucket, open dates fall back to the global counter. Unknown
+  // (still loading/failed) falls back to global so the form never dead-locks.
+  const [dateAvail, setDateAvail] = useState<{ managed: boolean; remaining: number | null } | null>(null);
+  const dateManaged = dateValid && dateAvail?.managed === true;
+  const dateRemaining = dateManaged && dateAvail?.remaining != null ? dateAvail.remaining : null;
 
   const { register, control, handleSubmit, watch, reset, getValues, formState: { errors } } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -74,6 +83,7 @@ export function Checkout() {
         phone: '',
         email: '',
         isChild: i >= initialAdults,
+        dob: '',
       })),
     },
   });
@@ -106,7 +116,7 @@ export function Checkout() {
       return;
     }
     const current = getValues('guestsList');
-    const blank = { fullName: '', phone: '', email: '', isChild: false };
+    const blank = { fullName: '', phone: '', email: '', isChild: false, dob: '' };
     const resized =
       current.length < partyCount
         ? [...current, ...Array.from({ length: partyCount - current.length }, () => ({ ...blank }))]
@@ -137,15 +147,34 @@ export function Checkout() {
     return () => ctrl.abort();
   }, [tourId]);
 
+  // Seats left depend on the picked day: fetch the day's bucket (if managed).
+  useEffect(() => {
+    if (!tour || !dateValid) {
+      setDateAvail(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    api
+      .get(`/tours/${tour.id}/availability`, { params: { date }, signal: ctrl.signal })
+      .then((r) => setDateAvail({ managed: r.data.managed, remaining: r.data.remaining }))
+      .catch(() => {
+        if (!ctrl.signal.aborted) setDateAvail(null);
+      });
+    return () => ctrl.abort();
+  }, [tour, dateValid, date]);
+
   // Clamp the party into the freshly loaded tour's range (and drop children
-  // when the tour sells no child tickets).
+  // when the tour sells no child tickets). On managed dates the day's bucket
+  // caps the party — not just the global counter — so an oversized party fails
+  // here with an explanation, not as a generic 400 after filling the form.
   useEffect(() => {
     if (!tour) return;
-    const hi = Math.max(tour.minGuests, Math.min(tour.maxGuests, Math.max(0, tour.availableSeats)));
+    const cap = dateRemaining ?? Math.max(0, tour.availableSeats);
+    const hi = Math.max(tour.minGuests, Math.min(tour.maxGuests, cap));
     const childOk = tour.childPrice != null && tour.childPrice > 0;
     setAdults((a) => Math.min(Math.max(a, 1), hi));
     setChildren((c) => Math.min(Math.max(childOk ? c : 0, 0), Math.max(0, hi - 1)));
-  }, [tour]);
+  }, [tour, dateAvail]);
 
   const hasChildPrice = tour != null && tour.childPrice != null && tour.childPrice > 0;
   const childPrice = tour?.childPrice ?? 0;
@@ -200,12 +229,16 @@ export function Checkout() {
       navigate('/admin');
       return;
     }
-    if (!tour || !dateValid || new Date(date).getTime() < startOfTodayLocal()) {
+    if (!tour || !dateValid || Date.parse(date) < startOfTodayUtc()) {
       toast.error(t('checkout.missingInfo'));
       return;
     }
     if (children > 0 && !hasChildPrice) {
       toast.error(t('checkout.bookingFailed'));
+      return;
+    }
+    if (values.guestsList.some((g) => g.isChild && (!g.dob || Number.isNaN(Date.parse(g.dob))))) {
+      toast.error(t('validation.childDobRequired'));
       return;
     }
     setSubmitting(true);
@@ -223,6 +256,7 @@ export function Checkout() {
         guestsList: values.guestsList.map((g) => ({
           fullName: g.fullName,
           isChild: g.isChild,
+          dateOfBirth: g.dob || undefined,
           phone: g.phone || undefined,
           email: g.email || undefined,
         })),
@@ -255,11 +289,13 @@ export function Checkout() {
   // Validate the party against the freshly loaded tour before rendering the form:
   // wrong size or a sold-out/past date fails here with an explanation, not as a
   // generic 400 after the customer filled everything in.
-  const dateOk = new Date(date).getTime() >= startOfTodayLocal();
+  const dateOk = dateValid && Date.parse(date) >= startOfTodayUtc();
+  // Day-aware seat ceiling: the managed day's bucket when known, else global.
+  const seatCap = dateRemaining ?? Math.max(0, tour.availableSeats);
   const guestsOk =
     partyCount >= tour.minGuests &&
     partyCount <= tour.maxGuests &&
-    partyCount <= Math.max(0, tour.availableSeats);
+    partyCount <= seatCap;
   if (!dateOk || !guestsOk) {
     return (
       <PageContainer className="max-w-5xl py-10">
@@ -268,7 +304,7 @@ export function Checkout() {
           hint={
             !dateOk
               ? t('tourDetails.chooseDate')
-              : t('tourDetails.guestsRange', { min: tour.minGuests, max: Math.min(tour.maxGuests, Math.max(0, tour.availableSeats)) })
+              : t('tourDetails.guestsRange', { min: tour.minGuests, max: Math.min(tour.maxGuests, seatCap) })
           }
           action={<Link to={`/tour/${tour.id}`}><Button>{t('tourCard.details')}</Button></Link>}
         />
@@ -326,9 +362,9 @@ export function Checkout() {
                 <QuantityStepper
                   value={adults}
                   min={1}
-                  max={Math.max(tour.minGuests, Math.min(tour.maxGuests, Math.max(0, tour.availableSeats)))}
+                  max={Math.max(tour.minGuests, Math.min(tour.maxGuests, seatCap))}
                   onChange={(n) => {
-                    const hi = Math.max(tour.minGuests, Math.min(tour.maxGuests, Math.max(0, tour.availableSeats)));
+                    const hi = Math.max(tour.minGuests, Math.min(tour.maxGuests, seatCap));
                     const na = Math.min(Math.max(n, 1), hi);
                     setAdults(na);
                     setChildren((c) => Math.min(c, Math.max(0, hi - na)));
@@ -346,7 +382,7 @@ export function Checkout() {
                   <QuantityStepper
                     value={children}
                     min={0}
-                    max={Math.max(0, Math.max(tour.minGuests, Math.min(tour.maxGuests, Math.max(0, tour.availableSeats))) - adults)}
+                    max={Math.max(0, Math.max(tour.minGuests, Math.min(tour.maxGuests, seatCap)) - adults)}
                     onChange={(n) => setChildren(Math.max(0, n))}
                     decreaseLabel={t('tourDetails.decreaseGuests')}
                     increaseLabel={t('tourDetails.increaseGuests')}
@@ -380,6 +416,13 @@ export function Checkout() {
                         <Input {...register(`guestsList.${i}.email`)} placeholder="email@example.com" inputMode="email" autoComplete="off" />
                       </Field>
                     </div>
+                    {isChildRow && (
+                      <div className="mt-3">
+                        <Field label={t('bookings.childDob', { defaultValue: 'Ngày sinh của trẻ' }) as string}>
+                          <Input type="date" {...register(`guestsList.${i}.dob`)} max={todayLocalInput()} />
+                        </Field>
+                      </div>
+                    )}
                   </div>
                 );
               })}

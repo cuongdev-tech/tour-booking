@@ -247,6 +247,8 @@ model Review {
   images    String[] @default([])
   helpfulCount Int   @default(0)
   hidden    Boolean  @default(false)
+  adminReply String? @db.Text
+  adminRepliedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

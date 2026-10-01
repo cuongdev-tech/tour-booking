@@ -5,6 +5,7 @@ import { validateBody } from '../middleware/common.js';
 import {
   patchCouponSchema,
   patchTourSchema,
+  replyReviewSchema,
   setReadSchema,
   tourDateSchema,
   updateBookingStatusSchema,
@@ -19,6 +20,8 @@ const router = Router();
 router.use(requireAuth, requireAdmin);
 
 router.get('/stats', c.stats);
+router.get('/revenue/overview', c.revenueOverview);
+router.get('/revenue/daily', c.revenueDaily);
 
 router.get('/tours', c.listTours);
 router.post('/tours', validateBody(upsertTourSchema), c.createTour);
@@ -32,7 +35,10 @@ router.patch('/bookings/:id', validateBody(updateBookingStatusSchema), c.updateB
 router.patch('/bookings/:id/payment', validateBody(updatePaymentStatusSchema), c.updatePaymentStatus);
 
 router.get('/reviews', c.listReviews);
+router.get('/reviews/counts', c.reviewCounts);
 router.patch('/reviews/:id', validateBody(updateReviewVisibilitySchema), c.setReviewHidden);
+router.patch('/reviews/:id/reply', validateBody(replyReviewSchema), c.replyReview);
+router.delete('/reviews/:id/reply', c.deleteReply);
 router.delete('/reviews/:id', c.deleteReview);
 
 router.get('/contact', c.listContact);

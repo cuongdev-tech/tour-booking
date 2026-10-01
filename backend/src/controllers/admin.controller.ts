@@ -45,11 +45,39 @@ export const awaitingPayments = asyncHandler(async (_req: Request, res: Response
 
 export const listReviews = asyncHandler(async (req: Request, res: Response) => {
   const hidden = req.query.hidden === '1' || req.query.hidden === 'true' ? true : req.query.hidden === '0' || req.query.hidden === 'false' ? false : undefined;
-  res.json(await reviewService.adminListReviews(req.query.page, req.query.limit, hidden));
+  // tab=pending -> đang hiện + chưa trả lời, tab=replied -> đã trả lời
+  const tab = typeof req.query.tab === 'string' ? req.query.tab : undefined;
+  const replied = tab === 'pending' ? false : tab === 'replied' ? true : undefined;
+  // Giữ tương thích filter cũ ?hidden=1, đồng thời hỗ trợ ?tab=all|pending|visible|hidden
+  let hiddenEff = hidden;
+  if (tab === 'visible') hiddenEff = false;
+  if (tab === 'hidden') hiddenEff = true;
+  if (tab === 'pending') hiddenEff = false;
+  res.json(await reviewService.adminListReviews(req.query.page, req.query.limit, hiddenEff, replied));
 });
 
 export const setReviewHidden = asyncHandler(async (req: Request, res: Response) => {
   res.json({ review: await reviewService.adminSetReviewHidden(req.params.id, req.body.hidden === true) });
+});
+
+export const replyReview = asyncHandler(async (req: Request, res: Response) => {
+  res.json({ review: await reviewService.adminReplyReview(req.params.id, String(req.body.reply ?? '')) });
+});
+
+export const deleteReply = asyncHandler(async (req: Request, res: Response) => {
+  res.json({ review: await reviewService.adminDeleteReply(req.params.id) });
+});
+
+export const reviewCounts = asyncHandler(async (_req: Request, res: Response) => {
+  res.json(await reviewService.adminReviewCounts());
+});
+
+export const revenueOverview = asyncHandler(async (req: Request, res: Response) => {
+  res.json(await service.getRevenueOverview(req.query.month, req.query.year));
+});
+
+export const revenueDaily = asyncHandler(async (req: Request, res: Response) => {
+  res.json(await service.getRevenueDaily(req.query.date));
 });
 
 export const deleteReview = asyncHandler(async (req: Request, res: Response) => {

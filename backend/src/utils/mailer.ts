@@ -27,15 +27,29 @@ export function getMailConfig(): MailConfig | null {
 export const isMailConfigured = (): boolean => getMailConfig() !== null;
 
 export async function sendMail(to: string, subject: string, text: string): Promise<void> {
+  const transporter = getTransporter();
+  const cfg = getMailConfig();
+  await transporter.sendMail({ from: cfg!.from, to, subject, text });
+}
+
+// One cached transporter (recreated when SMTP settings change) instead of a
+// new TCP connection per email.
+let cachedTransporter: ReturnType<typeof nodemailer.createTransport> | null = null;
+let cachedKey = '';
+function getTransporter(): ReturnType<typeof nodemailer.createTransport> {
   const cfg = getMailConfig();
   if (!cfg) throw new Error('Email is not configured');
-  const transporter = nodemailer.createTransport({
-    host: cfg.host,
-    port: cfg.port,
-    secure: cfg.port === 465,
-    auth: { user: cfg.user, pass: cfg.pass },
-  });
-  await transporter.sendMail({ from: cfg.from, to, subject, text });
+  const key = JSON.stringify(cfg);
+  if (!cachedTransporter || cachedKey !== key) {
+    cachedTransporter = nodemailer.createTransport({
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.port === 465,
+      auth: { user: cfg.user, pass: cfg.pass },
+    });
+    cachedKey = key;
+  }
+  return cachedTransporter;
 }
 
 export function passwordResetMail(resetUrl: string): { subject: string; text: string } {
@@ -70,7 +84,8 @@ function vnd(amount: number): string {
 
 function viDate(value: Date | string): string {
   const d = typeof value === 'string' ? new Date(value) : value;
-  return d.toLocaleDateString('vi-VN');
+  // Pin Vietnam time: the server TZ may differ while inventory compares UTC days.
+  return d.toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
 }
 
 export interface BookingMailData {

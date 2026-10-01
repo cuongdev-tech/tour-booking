@@ -19,6 +19,7 @@ async function sendReminders(): Promise<void> {
       travelDate: { gte: start, lte: end },
     },
     include: { tour: { select: { title: true } } },
+    orderBy: { createdAt: 'asc' },
     take: 200,
   });
   for (const b of due) {
@@ -46,6 +47,7 @@ async function sendReviewInvites(): Promise<void> {
   const done = await prisma.booking.findMany({
     where: { bookingStatus: 'COMPLETED', reviewInviteSentAt: null, updatedAt: { gte: since } },
     include: { tour: { select: { title: true } } },
+    orderBy: { updatedAt: 'asc' },
     take: 200,
   });
   for (const b of done) {

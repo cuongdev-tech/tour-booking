@@ -20,6 +20,7 @@ import { About } from './pages/About';
 import { NotFound } from './pages/NotFound';
 import { AdminLayout } from './pages/AdminLayout';
 import { AdminDashboard } from './pages/admin/Dashboard';
+import { DailyRevenue } from './pages/admin/DailyRevenue';
 import { ToursManage } from './pages/admin/ToursManage';
 import { BookingsManage } from './pages/admin/BookingsManage';
 import { UsersManage } from './pages/admin/UsersManage';
@@ -72,6 +73,7 @@ export default function App() {
               <Route path="/favorites" element={<RequireAuth><Favorites /></RequireAuth>} />
               <Route path="/admin" element={<RequireAdmin><AdminLayout /></RequireAdmin>}>
                 <Route index element={<AdminDashboard />} />
+                <Route path="doanh-thu-ngay" element={<DailyRevenue />} />
                 <Route path="tours" element={<ToursManage />} />
                 <Route path="bookings" element={<BookingsManage />} />
                 <Route path="users" element={<UsersManage />} />

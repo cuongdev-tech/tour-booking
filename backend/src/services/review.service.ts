@@ -99,7 +99,7 @@ export async function createReview(userId: string, bookingId: string, rating: nu
     });
     await tx.tour.update({
       where: { id: booking.tourId },
-      data: { rating: agg._avg.rating ?? rating, reviewCount: agg._count.rating },
+      data: { rating: agg._avg.rating ?? 0, reviewCount: agg._count.rating },
     });
     return created;
   });
@@ -137,10 +137,21 @@ export async function toggleHelpful(userId: string, reviewId: string) {
   });
 }
 
-export function adminListReviews(page?: unknown, limit?: unknown, hidden?: boolean) {
+export function adminListReviews(page?: unknown, limit?: unknown, hidden?: boolean, replied?: boolean) {
   const p = Math.max(1, Math.floor(Number(page) || 1));
   const l = Math.min(50, Math.max(1, Math.floor(Number(limit) || 10)));
-  const where = hidden === undefined ? {} : { hidden };
+  // Tabs disjoint để count khớp list:
+  // - pending = đang hiện + chưa trả lời (cần xử lý)
+  // - visible/hidden lọc theo hidden, không quan tâm reply
+  // - replied (ít dùng) = đã trả lời
+  const where: Record<string, unknown> = {};
+  if (hidden !== undefined) where.hidden = hidden;
+  if (replied === true) where.adminReply = { not: null };
+  if (replied === false) {
+    where.adminReply = null;
+    // Chờ duyệt chỉ tính đơn đang hiện; đơn đã ẩn thì nằm ở tab Ẩn.
+    if (hidden === undefined) where.hidden = false;
+  }
   return Promise.all([
     prisma.review.count({ where }),
     prisma.review.findMany({
@@ -196,4 +207,35 @@ export async function adminDeleteReview(id: string) {
     });
   });
   return { success: true };
+}
+
+export async function adminReplyReview(id: string, reply: string) {
+  const review = await prisma.review.findUnique({ where: { id } });
+  if (!review) throw new AppError(404, 'Review not found');
+  const text = reply.trim();
+  if (!text) throw new AppError(400, 'Reply must not be empty');
+  if (text.length > 2000) throw new AppError(400, 'Reply is too long');
+  return prisma.review.update({
+    where: { id },
+    data: { adminReply: text, adminRepliedAt: new Date() },
+  });
+}
+
+export async function adminDeleteReply(id: string) {
+  const review = await prisma.review.findUnique({ where: { id } });
+  if (!review) throw new AppError(404, 'Review not found');
+  return prisma.review.update({
+    where: { id },
+    data: { adminReply: null, adminRepliedAt: null },
+  });
+}
+
+export async function adminReviewCounts() {
+  const [total, pending, visible, hidden] = await Promise.all([
+    prisma.review.count(),
+    prisma.review.count({ where: { hidden: false, adminReply: null } }),
+    prisma.review.count({ where: { hidden: false } }),
+    prisma.review.count({ where: { hidden: true } }),
+  ]);
+  return { total, pending, visible, hidden };
 }

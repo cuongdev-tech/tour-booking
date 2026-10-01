@@ -139,6 +139,8 @@ export interface Review {
   images: string[];
   helpfulCount: number;
   hidden?: boolean;
+  adminReply?: string | null;
+  adminRepliedAt?: string | null;
   createdAt: string;
   user?: { id: string; name: string; avatar: string | null };
   tour?: { id: string; title: string };
