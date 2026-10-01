@@ -14,8 +14,10 @@ export const asyncHandler =
     fn(req, res, next).catch(next);
   };
 
-export function toSafeUser<T extends { passwordHash?: unknown }>(user: T): Omit<T, 'passwordHash'> {
-  const { passwordHash: _omitted, ...safe } = user;
+export function toSafeUser<T extends { passwordHash?: unknown; passwordResetToken?: unknown; passwordResetExpires?: unknown }>(
+  user: T,
+): Omit<T, 'passwordHash' | 'passwordResetToken' | 'passwordResetExpires'> {
+  const { passwordHash: _omitted, passwordResetToken: _omitted2, passwordResetExpires: _omitted3, ...safe } = user;
   return safe;
 }
 

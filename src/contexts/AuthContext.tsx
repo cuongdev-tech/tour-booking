@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import axios from 'axios';
 import { api } from '../services/api';
 import type { User } from '../types';
 
@@ -29,9 +30,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const { data } = await api.get('/auth/me');
       setUser(data.user);
-    } catch {
-      localStorage.removeItem('tourbooking_token');
-      setUser(null);
+    } catch (err) {
+      // Only drop the session when the server rejects the token (401/403).
+      // A transient network/5xx failure retries once before giving up, so a
+      // blip at mount doesn't kick a valid user to the login page.
+      if (axios.isAxiosError(err) && err.response && (err.response.status === 401 || err.response.status === 403)) {
+        localStorage.removeItem('tourbooking_token');
+        setUser(null);
+      } else if (axios.isAxiosError(err) && !err.response) {
+        await new Promise((r) => window.setTimeout(r, 1500));
+        try {
+          const { data } = await api.get('/auth/me');
+          setUser(data.user);
+          return;
+        } catch {
+          // Still offline — stay logged out visually but keep the token so a
+          // later refresh can recover the session without re-login.
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -40,6 +56,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // A 401 anywhere (e.g. token expired mid-session) clears user state at once
+  // instead of leaving a fake logged-in UI until the next reload.
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener('auth:expired', onExpired);
+    return () => window.removeEventListener('auth:expired', onExpired);
+  }, []);
 
   const login = useCallback(async (email: string, password: string) => {
     const { data } = await api.post('/auth/login', { email, password });

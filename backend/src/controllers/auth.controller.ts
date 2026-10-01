@@ -21,3 +21,12 @@ export const updateProfile = asyncHandler(async (req: Request, res: Response) =>
   const user = await service.updateProfile(req.user!.id, req.body);
   res.json({ user });
 });
+
+export const forgotPassword = asyncHandler(async (req: Request, res: Response) => {
+  res.json(await service.requestPasswordReset(req.body.email));
+});
+
+export const resetPassword = asyncHandler(async (req: Request, res: Response) => {
+  const result = await service.resetPassword(req.body.token, req.body.password);
+  res.json(result);
+});

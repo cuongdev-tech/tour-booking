@@ -57,6 +57,11 @@ export interface Translation {
     ctaSubtitle: string;
     ctaButton: string;
   };
+  destinations: {
+    title: string;
+    subtitle: string;
+    toursCount: string;
+  };
   tours: {
     title: string;
     found: string;
@@ -87,10 +92,15 @@ export interface Translation {
     retry: string;
     emptyTitle: string;
     emptyHint: string;
+    filters: string;
+    showResults: string;
   };
   tourCard: {
     from: string;
     details: string;
+    popular: string;
+    bestSeller: string;
+    isNew: string;
     onlyLeft: string;
     loginToFavorite: string;
     savedFavorite: string;
@@ -188,12 +198,18 @@ export interface Translation {
     home: string;
     notFound: string;
   };
+  notFound: {
+    title: string;
+    hint: string;
+  };
   auth: {
     welcomeBack: string;
     createAccount: string;
     email: string;
     password: string;
     passwordPlaceholder: string;
+    showPassword: string;
+    hidePassword: string;
     fullName: string;
     fullNamePlaceholder: string;
     phone: string;
@@ -204,6 +220,15 @@ export interface Translation {
     loginFailed: string;
     registerFailed: string;
     devAdmin: string;
+    forgotPassword: string;
+    resetTitle: string;
+    resetHint: string;
+    resetSent: string;
+    newPassword: string;
+    resetSuccess: string;
+    sendResetLink: string;
+    setNewPassword: string;
+    backToLogin: string;
   };
   profile: {
     title: string;
@@ -244,6 +269,16 @@ export interface Translation {
     reviewSubmit: string;
     reviewSuccess: string;
     reviewFailed: string;
+    editReview: string;
+    deleteReview: string;
+    reviewUpdated: string;
+    reviewDeleted: string;
+    deleteReviewTitle: string;
+    deleteReviewMessage: string;
+    modify: string;
+    modifySuccess: string;
+    modifyFailed: string;
+    invoice: string;
   };
   favorites: {
     title: string;
@@ -279,10 +314,14 @@ export interface Translation {
     bookings: string;
     users: string;
     coupons: string;
+    reviews: string;
+    contact: string;
     totalUsers: string;
     totalTours: string;
     totalBookings: string;
     revenue: string;
+    chartStatus: string;
+    chartRevenue: string;
     actions: string;
     loadFailed: string;
   };
@@ -298,7 +337,14 @@ export interface Translation {
     durationPlaceholder: string;
     price: string;
     seats: string;
+    minGuests: string;
+    maxGuests: string;
+    dates: string;
+    capacity: string;
+    addDate: string;
     status: string;
+    active: string;
+    inactive: string;
     featured: string;
     description: string;
     images: string;
@@ -310,6 +356,8 @@ export interface Translation {
     cancel: string;
     edit: string;
     delete: string;
+    deleteDateTitle: string;
+    deleteDateMessage: string;
     saved: string;
     saveFailed: string;
     deleteTitle: string;
@@ -353,6 +401,7 @@ export interface Translation {
     minOrder: string;
     expiresAt: string;
     usageLimit: string;
+    unlimited: string;
     create: string;
     cancel: string;
     update: string;
@@ -373,6 +422,43 @@ export interface Translation {
     active: string;
     codePlaceholder: string;
   };
+  adminReviews: {
+    title: string;
+    count: string;
+    hide: string;
+    unhide: string;
+    hidden: string;
+    delete: string;
+    deleteTitle: string;
+    deleteMessage: string;
+    deleted: string;
+    deleteFailed: string;
+    loadFailed: string;
+    updated: string;
+    updateFailed: string;
+  };
+  adminContact: {
+    title: string;
+    count: string;
+    unread: string;
+    markRead: string;
+    markUnread: string;
+    delete: string;
+    deleteTitle: string;
+    deleted: string;
+    deleteFailed: string;
+    loadFailed: string;
+    updateFailed: string;
+  };
+  contact: {
+    title: string;
+    subtitle: string;
+    message: string;
+    messagePh: string;
+    send: string;
+    sent: string;
+    sendFailed: string;
+  };
   footer: {
     tagline: string;
     explore: string;
@@ -380,6 +466,7 @@ export interface Translation {
     beach: string;
     mountains: string;
     culture: string;
+    relaxation: string;
     account: string;
     myBookings: string;
     favorites: string;
@@ -424,8 +511,18 @@ export interface Translation {
     notYourBooking: string;
     alreadyCancelled: string;
     completedNoCancel: string;
+    invalidTransition: string;
+    tourStartedNoCancel: string;
+    rateLimited: string;
+    resetInvalid: string;
+    dateSoldOut: string;
+    tourStartedNoModify: string;
+    upcomingOnlyModify: string;
+    paidNoModify: string;
+    capacityBelowBooked: string;
     alreadyReviewed: string;
     completedOnlyReview: string;
+    tourNotFinished: string;
     bookingNotFound: string;
     adminRequired: string;
     unauthorized: string;
@@ -435,6 +532,12 @@ export interface Translation {
     resourceNotFound: string;
     recordInUse: string;
     tourHasBookings: string;
+    childNotOffered?: string;
+    adultRequired?: string;
+    addonsInvalid?: string;
+    freeCancelEnded?: string;
+    ownVote?: string;
+    adminNoBooking?: string;
   };
   enums: {
     categoryBeach: string;
@@ -449,6 +552,7 @@ export interface Translation {
     payBank: string;
     payCard: string;
     payPaid: string;
+    payAwaiting: string;
     payFailed: string;
     payRefunded: string;
     roleCustomer: string;

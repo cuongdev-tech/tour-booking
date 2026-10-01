@@ -12,6 +12,7 @@ export function getFavorites(userId: string) {
 export async function addFavorite(userId: string, tourId: string) {
   const tour = await prisma.tour.findUnique({ where: { id: tourId } });
   if (!tour) throw new AppError(404, 'Tour not found');
+  if (tour.status !== 'ACTIVE') throw new AppError(400, 'Tour is not available for booking');
   return prisma.favorite.upsert({
     where: { userId_tourId: { userId, tourId } },
     update: {},

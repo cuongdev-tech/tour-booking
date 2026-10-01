@@ -16,6 +16,13 @@ export interface User {
 
 export type TourCategory = 'Beach' | 'Mountains' | 'Culture' | 'Relaxation';
 
+export interface TourAddon {
+  id: string;
+  name: string;
+  price: number;
+  perPerson: boolean;
+}
+
 export interface TourItineraryDay {
   day: number;
   title: string;
@@ -36,6 +43,12 @@ export interface Tour {
   images: string[];
   duration: string;
   price: number;
+  /** Null = no child pricing (everyone pays adult price). */
+  childPrice: number | null;
+  childMaxAge: number | null;
+  addons: TourAddon[];
+  /** Null = flexible cancellation until the travel day. */
+  freeCancelHours: number | null;
   itinerary: TourItineraryDay[];
   minGuests: number;
   maxGuests: number;
@@ -50,7 +63,7 @@ export interface Tour {
 
 export type BookingStatus = 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'COMPLETED';
 export type PaymentMethod = 'CASH' | 'BANK_TRANSFER' | 'CARD';
-export type PaymentStatus = 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED';
+export type PaymentStatus = 'PENDING' | 'AWAITING_CONFIRMATION' | 'PAID' | 'FAILED' | 'REFUNDED';
 
 export interface BookingGuest {
   id: string;
@@ -58,6 +71,7 @@ export interface BookingGuest {
   fullName: string;
   dateOfBirth: string | null;
   gender: 'MALE' | 'FEMALE' | 'OTHER' | null;
+  isChild: boolean;
   phone: string | null;
   email: string | null;
 }
@@ -69,6 +83,8 @@ export interface Payment {
   method: PaymentMethod;
   status: PaymentStatus;
   transactionCode: string | null;
+  paidAt: string | null;
+  updatedAt: string;
 }
 
 export interface Coupon {
@@ -91,6 +107,11 @@ export interface Booking {
   couponId: string | null;
   travelDate: string;
   guests: number;
+  /** Null on legacy rows = all adults. */
+  adults: number | null;
+  children: number | null;
+  addons: TourAddon[];
+  addonsTotal: number;
   customerName: string;
   customerEmail: string;
   customerPhone: string;
@@ -105,6 +126,7 @@ export interface Booking {
   guestsList?: BookingGuest[];
   payment?: Payment | null;
   coupon?: Coupon | null;
+  user?: { id: string; name: string; email: string; phone: string | null };
 }
 
 export interface Review {
@@ -114,8 +136,12 @@ export interface Review {
   bookingId: string;
   rating: number;
   comment: string | null;
+  images: string[];
+  helpfulCount: number;
+  hidden?: boolean;
   createdAt: string;
   user?: { id: string; name: string; avatar: string | null };
+  tour?: { id: string; title: string };
 }
 
 export interface Favorite {

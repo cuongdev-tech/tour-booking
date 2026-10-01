@@ -1,17 +1,90 @@
-import { useMemo } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Compass } from 'lucide-react';
+import { Eye, EyeOff, ShieldCheck, Star } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { apiErrorMessage } from '../services/api';
-import { Button, Card, Field, Input } from '../components/ui/kit';
+import { Button, Card, Field, Input, PageContainer, BrandLogo } from '../components/ui/kit';
+import { useDocumentMeta } from '../hooks/useDocumentMeta';
+
+function PasswordInput({
+  id,
+  placeholder,
+  error,
+  input,
+}: {
+  id: string;
+  placeholder?: string;
+  error?: string;
+  input: React.InputHTMLAttributes<HTMLInputElement>;
+}) {
+  const { t } = useTranslation();
+  const [show, setShow] = useState(false);
+  return (
+    <Field label={t('auth.password')} error={error}>
+      <span className="relative block">
+        <Input
+          id={id}
+          type={show ? 'text' : 'password'}
+          placeholder={placeholder}
+          autoComplete={id === 'login-password' ? 'current-password' : 'new-password'}
+          {...input}
+          className="pr-11"
+        />
+        <button
+          type="button"
+          onClick={() => setShow(!show)}
+          aria-label={show ? t('auth.hidePassword') : t('auth.showPassword')}
+          aria-pressed={show}
+          className="absolute right-1 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700 active:bg-slate-200"
+        >
+          {show ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
+        </button>
+      </span>
+    </Field>
+  );
+}
+
+function AuthShell({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
+  return (
+    <PageContainer className="max-w-5xl py-10 md:py-14">
+      <div className="grid grid-cols-1 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-soft md:grid-cols-2">
+        {/* Visual panel: desktop only, reuses existing marketing copy */}
+        <div className="relative hidden flex-col justify-between overflow-hidden bg-slate-900 p-8 md:flex lg:p-10">
+          <img
+            src="https://images.unsplash.com/photo-1528127269322-539801943592?auto=format&fit=crop&q=80&w=1000"
+            alt=""
+            aria-hidden
+            className="absolute inset-0 h-full w-full object-cover opacity-30"
+          />
+          <div className="relative">
+            <BrandLogo dark />
+            <p className="mt-6 max-w-xs text-2xl font-bold leading-snug tracking-tight text-white">{t('home.title')}</p>
+            <p className="mt-2 max-w-xs text-sm leading-relaxed text-slate-300">{t('footer.tagline')}</p>
+          </div>
+          <div className="relative flex flex-col gap-2">
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-widest text-orange-200">
+              <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" aria-hidden /> {t('home.trusted')}
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-xs text-slate-300">
+              <ShieldCheck className="h-4 w-4 text-orange-300" aria-hidden /> {t('home.why1Title')}
+            </span>
+          </div>
+        </div>
+        <div className="p-6 sm:p-8 lg:p-10">{children}</div>
+      </div>
+    </PageContainer>
+  );
+}
 
 export function Login() {
   const { t } = useTranslation();
+  useDocumentMeta(t('auth.welcomeBack'));
   const { login } = useAuth();
   const navigate = useNavigate();
   const [params] = useSearchParams();
@@ -33,43 +106,58 @@ export function Login() {
   });
 
   return (
-    <div className="mx-auto max-w-md px-4 py-12">
-      <Link to="/" className="flex items-center justify-center gap-2">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-600 text-white"><Compass className="h-5 w-5" /></span>
-        <span className="text-2xl font-bold text-slate-900">Tour Booking</span>
-      </Link>
-      <Card className="mt-6 p-8">
-        <h1 className="text-xl font-bold text-slate-900">{t('auth.welcomeBack')}</h1>
+    <AuthShell>
+      <div className="mb-6 flex justify-center md:hidden">
+        <Link to="/" className="rounded-lg" aria-label="Tour Booking - home"><BrandLogo /></Link>
+      </div>
+      <Card className="border-0 p-0 shadow-none">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">{t('auth.welcomeBack')}</h1>
         <form
-          className="mt-5 space-y-4"
+          className="mt-6 space-y-4"
           onSubmit={handleSubmit(async (v) => {
             try {
               await login(v.email, v.password);
-              navigate(next);
+              navigate(next, { replace: true });
             } catch (err) {
               toast.error(apiErrorMessage(err, t('auth.loginFailed')));
             }
           })}
         >
-          <Field label={t('auth.email')} error={errors.email?.message}><Input {...register('email')} placeholder="you@example.com" /></Field>
-          <Field label={t('auth.password')} error={errors.password?.message}><Input type="password" {...register('password')} placeholder={t('auth.passwordPlaceholder')} /></Field>
-          <Button type="submit" disabled={isSubmitting} className="w-full">{t('auth.loginButton')}</Button>
+          <Field label={t('auth.email')} error={errors.email?.message}>
+            <Input id="login-email" {...register('email')} placeholder="you@example.com" inputMode="email" autoComplete="email" />
+          </Field>
+          <PasswordInput id="login-password" placeholder={t('auth.passwordPlaceholder')} error={errors.password?.message} input={{ ...register('password') }} />
+          <div className="flex justify-end">
+            <Link to="/forgot-password" className="rounded text-sm font-semibold text-orange-700 transition-colors hover:text-orange-800 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700">
+              {t('auth.forgotPassword')}
+            </Link>
+          </div>
+          <Button type="submit" isLoading={isSubmitting} className="w-full py-3">{t('auth.loginButton')}</Button>
         </form>
         <p className="mt-5 text-center text-sm text-slate-500">
-          {t('auth.noAccount')} <Link to="/register" className="font-semibold text-teal-700 hover:underline">{t('auth.signupButton')}</Link>
+          {t('auth.noAccount')}{' '}
+          <Link to="/register" className="rounded font-semibold text-orange-700 transition-colors hover:text-orange-800 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700">{t('auth.signupButton')}</Link>
         </p>
-        <p className="mt-3 rounded-xl bg-slate-50 p-3 text-center text-xs text-slate-500">
-          {t('auth.devAdmin')}
-        </p>
+        {/* Dev-only credential hint: never shown in production builds. */}
+        {import.meta.env.DEV && (
+          <p className="mt-4 rounded-xl bg-slate-50 p-3 text-center text-xs leading-relaxed text-slate-500">
+            {t('auth.devAdmin')}
+          </p>
+        )}
       </Card>
-    </div>
+    </AuthShell>
   );
 }
 
 export function Register() {
   const { t } = useTranslation();
+  useDocumentMeta(t('auth.createAccount'));
   const { register: signup } = useAuth();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  // Preserve deep links just like Login (same open-redirect guard).
+  const rawNext = params.get('next') ?? '/';
+  const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
 
   const registerSchema = useMemo(
     () =>
@@ -87,34 +175,40 @@ export function Register() {
   });
 
   return (
-    <div className="mx-auto max-w-md px-4 py-12">
-      <Link to="/" className="flex items-center justify-center gap-2">
-        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-600 text-white"><Compass className="h-5 w-5" /></span>
-        <span className="text-2xl font-bold text-slate-900">Tour Booking</span>
-      </Link>
-      <Card className="mt-6 p-8">
-        <h1 className="text-xl font-bold text-slate-900">{t('auth.createAccount')}</h1>
+    <AuthShell>
+      <div className="mb-6 flex justify-center md:hidden">
+        <Link to="/" className="rounded-lg" aria-label="Tour Booking - home"><BrandLogo /></Link>
+      </div>
+      <Card className="border-0 p-0 shadow-none">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">{t('auth.createAccount')}</h1>
         <form
-          className="mt-5 space-y-4"
+          className="mt-6 space-y-4"
           onSubmit={handleSubmit(async (v) => {
             try {
               await signup({ name: v.name, email: v.email, password: v.password, phone: v.phone || undefined });
-              navigate('/');
+              navigate(next, { replace: true });
             } catch (err) {
               toast.error(apiErrorMessage(err, t('auth.registerFailed')));
             }
           })}
         >
-          <Field label={t('auth.fullName')} error={errors.name?.message}><Input {...register('name')} placeholder={t('auth.fullNamePlaceholder')} /></Field>
-          <Field label={t('auth.email')} error={errors.email?.message}><Input {...register('email')} placeholder="you@example.com" /></Field>
-          <Field label={t('auth.phone')} error={errors.phone?.message}><Input {...register('phone')} placeholder="0901234567" /></Field>
-          <Field label={t('auth.password')} error={errors.password?.message}><Input type="password" {...register('password')} placeholder={t('auth.passwordPlaceholder')} /></Field>
-          <Button type="submit" disabled={isSubmitting} className="w-full">{t('auth.signupButton')}</Button>
+          <Field label={t('auth.fullName')} error={errors.name?.message}>
+            <Input id="register-name" {...register('name')} placeholder={t('auth.fullNamePlaceholder')} autoComplete="name" />
+          </Field>
+          <Field label={t('auth.email')} error={errors.email?.message}>
+            <Input id="register-email" {...register('email')} placeholder="you@example.com" inputMode="email" autoComplete="email" />
+          </Field>
+          <Field label={t('auth.phone')} error={errors.phone?.message}>
+            <Input id="register-phone" {...register('phone')} placeholder="0901234567" inputMode="tel" autoComplete="tel" />
+          </Field>
+          <PasswordInput id="register-password" placeholder={t('auth.passwordPlaceholder')} error={errors.password?.message} input={{ ...register('password') }} />
+          <Button type="submit" isLoading={isSubmitting} className="w-full py-3">{t('auth.signupButton')}</Button>
         </form>
         <p className="mt-5 text-center text-sm text-slate-500">
-          {t('auth.haveAccount')} <Link to="/login" className="font-semibold text-teal-700 hover:underline">{t('auth.loginButton')}</Link>
+          {t('auth.haveAccount')}{' '}
+          <Link to="/login" className="rounded font-semibold text-orange-700 transition-colors hover:text-orange-800 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700">{t('auth.loginButton')}</Link>
         </p>
       </Card>
-    </div>
+    </AuthShell>
   );
 }

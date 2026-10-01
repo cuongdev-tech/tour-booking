@@ -1,5 +1,7 @@
 import type { Request, Response } from 'express';
 import * as service from '../services/admin.service.js';
+import * as reviewService from '../services/review.service.js';
+import * as contactService from '../services/contact.service.js';
 import { AppError, asyncHandler } from '../utils/helpers.js';
 
 export const stats = asyncHandler(async (_req: Request, res: Response) => {
@@ -7,7 +9,8 @@ export const stats = asyncHandler(async (_req: Request, res: Response) => {
 });
 
 export const listTours = asyncHandler(async (req: Request, res: Response) => {
-  res.json(await service.adminListTours(req.query.page, req.query.limit));
+  const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+  res.json(await service.adminListTours(req.query.page, req.query.limit, q));
 });
 export const createTour = asyncHandler(async (req: Request, res: Response) => {
   res.status(201).json({ tour: await service.adminCreateTour(req.body) });
@@ -26,6 +29,44 @@ export const listBookings = asyncHandler(async (req: Request, res: Response) => 
 });
 export const updateBookingStatus = asyncHandler(async (req: Request, res: Response) => {
   res.json({ booking: await service.adminUpdateBookingStatus(req.params.id, req.body.status) });
+});
+
+export const updatePaymentStatus = asyncHandler(async (req: Request, res: Response) => {
+  res.json({ payment: await service.adminUpdatePaymentStatus(req.params.id, req.body.status) });
+});
+
+export const getBooking = asyncHandler(async (req: Request, res: Response) => {
+  res.json({ booking: await service.adminGetBooking(req.params.id) });
+});
+
+export const awaitingPayments = asyncHandler(async (_req: Request, res: Response) => {
+  res.json(await service.adminAwaitingPayments());
+});
+
+export const listReviews = asyncHandler(async (req: Request, res: Response) => {
+  const hidden = req.query.hidden === '1' || req.query.hidden === 'true' ? true : req.query.hidden === '0' || req.query.hidden === 'false' ? false : undefined;
+  res.json(await reviewService.adminListReviews(req.query.page, req.query.limit, hidden));
+});
+
+export const setReviewHidden = asyncHandler(async (req: Request, res: Response) => {
+  res.json({ review: await reviewService.adminSetReviewHidden(req.params.id, req.body.hidden === true) });
+});
+
+export const deleteReview = asyncHandler(async (req: Request, res: Response) => {
+  res.json(await reviewService.adminDeleteReview(req.params.id));
+});
+
+export const listContact = asyncHandler(async (req: Request, res: Response) => {
+  const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+  res.json(await contactService.adminListContactMessages(req.query.page, req.query.limit, req.query.unread === '1' || req.query.unread === 'true', q));
+});
+
+export const setContactRead = asyncHandler(async (req: Request, res: Response) => {
+  res.json({ message: await contactService.adminSetContactRead(req.params.id, req.body.isRead === true) });
+});
+
+export const deleteContact = asyncHandler(async (req: Request, res: Response) => {
+  res.json(await contactService.adminDeleteContactMessage(req.params.id));
 });
 
 export const listUsers = asyncHandler(async (req: Request, res: Response) => {
@@ -51,4 +92,18 @@ export const updateCoupon = asyncHandler(async (req: Request, res: Response) => 
 export const deleteCoupon = asyncHandler(async (req: Request, res: Response) => {
   await service.adminDeleteCoupon(req.params.id);
   res.json({ success: true });
+});
+
+export const listTourDates = asyncHandler(async (req: Request, res: Response) => {
+  res.json({ data: await service.adminListTourDates(req.params.id) });
+});
+
+export const upsertTourDate = asyncHandler(async (req: Request, res: Response) => {
+  res.json({
+    tourDate: await service.adminUpsertTourDate(req.params.id, req.body.date, req.body.capacity),
+  });
+});
+
+export const deleteTourDate = asyncHandler(async (req: Request, res: Response) => {
+  res.json(await service.adminDeleteTourDate(req.params.dateId));
 });

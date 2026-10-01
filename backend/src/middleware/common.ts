@@ -36,6 +36,16 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
       res.status(400).json({ message: 'Operation violates data constraints (record is in use)' });
       return;
     }
+    // Malformed id (e.g. non-CUID string where Prisma expects one).
+    if (err.code === 'P2023') {
+      res.status(400).json({ message: 'Invalid id format' });
+      return;
+    }
+  }
+  if (err instanceof Prisma.PrismaClientValidationError) {
+    // Invalid enum/query values (e.g. ?category=Foo) — client error, not a 500.
+    res.status(400).json({ message: 'Invalid request parameters' });
+    return;
   }
   if (err instanceof Prisma.PrismaClientUnknownRequestError) {
     // Raw DB errors such as RESTRICT violations surface here; never leak internals.

@@ -1,17 +1,53 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
+import { Search } from 'lucide-react';
 import { api, apiErrorMessage } from '../../services/api';
 import { useEnumLabels } from '../../i18n/enums';
+import { useDebounce } from '../../hooks/useDebounce';
 import { formatCurrency, type Pagination, type Tour, type TourItineraryDay } from '../../types';
-import { Button, Card, Field, Input, Select } from '../../components/ui/kit';
+import { Button, Card, Field, Input, RowAction, Select, TableCard, TableEmpty, Td, Textarea, Th } from '../../components/ui/kit';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { AdminPagination } from './Pagination';
+import { formatDateStr } from '../../i18n/format';
 
-const empty = { title: '', departureLocation: '', destination: '', category: 'Beach', duration: '', price: 2000000, availableSeats: 20, featured: false, status: 'ACTIVE', description: '', images: '', transportation: [] as string[], includedServices: '', excludedServices: '' };
+interface TourDateRow {
+  id: string;
+  tourId: string;
+  date: string;
+  capacity: number;
+  booked: number;
+}
+
+const empty = { title: '', departureLocation: '', destination: '', category: 'Beach', duration: '', price: 2000000, childPrice: NaN, childMaxAge: NaN, freeCancelHours: NaN, minGuests: 1, maxGuests: 20, availableSeats: 20, featured: false, status: 'ACTIVE', description: '', images: '', transportation: [] as string[], includedServices: '', excludedServices: '' };
 
 const TRANSPORT_MODES = ['Flight', 'Bus', 'Coach', 'PrivateCar', 'LocalTransfer', 'Cruise'];
+
+interface AddonDraft { name: string; price: number; perPerson: boolean; }
+
+const blankAddons = (): AddonDraft[] => [];
+
+/** Stable add-on ids derived from names (snapshots in bookings keep working). */
+function slugifyAddon(name: string, taken: Set<string>): string {
+  const base =
+    name
+      .toLowerCase()
+      .replace(/[đ]/g, 'd')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '')
+      .slice(0, 40) || 'addon';
+  let id = base;
+  let n = 1;
+  while (taken.has(id)) {
+    n += 1;
+    id = `${base}-${n}`;
+  }
+  taken.add(id);
+  return id;
+}
 
 const blankItinerary = (): TourItineraryDay[] => [{ day: 1, title: '', activities: [''] }];
 
@@ -36,41 +72,100 @@ export function ToursManage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<Pagination | null>(null);
+  const [qInput, setQInput] = useState('');
+  const q = useDebounce(qInput, 300);
   const [itinerary, setItinerary] = useState<TourItineraryDay[]>(blankItinerary());
+  const [addons, setAddons] = useState<AddonDraft[]>(blankAddons());
+  const [tourDates, setTourDates] = useState<TourDateRow[]>([]);
+  const [newDate, setNewDate] = useState('');
+  const [newCapacity, setNewCapacity] = useState(20);
+  const [deleteDateId, setDeleteDateId] = useState<string | null>(null);
+  const editingIdRef = useRef<string | null>(null);
   const { register, handleSubmit, reset } = useForm({ defaultValues: empty });
 
-  const load = (p: number = page) =>
+  const load = (p: number = page, keyword: string = q) =>
     api
-      .get('/admin/tours', { params: { page: p, limit: 10 } })
+      .get('/admin/tours', { params: { page: p, limit: 10, ...(keyword.trim() ? { q: keyword.trim() } : {}) } })
       .then((r) => {
         setTours(r.data.data);
         setPagination(r.data.pagination);
       })
-      .catch(() => toast.error(t('adminTours.loadFailed')));
-  useEffect(() => { void load(page); }, [page]);
+      .catch((err) => toast.error(apiErrorMessage(err, t('adminTours.loadFailed'))));
+  useEffect(() => { setPage(1); }, [q]);
+  useEffect(() => { void load(page, q); }, [page, q]);
 
   const openCreate = () => {
     setEditing(null);
+    editingIdRef.current = null;
     setCreating(true);
     reset(empty);
     setItinerary(blankItinerary());
+    setAddons(blankAddons());
+    setTourDates([]);
+  };
+  const loadTourDates = async (tourId: string) => {
+    try {
+      const { data } = await api.get(`/admin/tours/${tourId}/dates`);
+      // Stale guard: ignore the response if the admin already opened another tour.
+      if (editingIdRef.current === tourId) setTourDates(data.data);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, t('adminTours.loadFailed')));
+    }
   };
   const openEdit = (tour: Tour) => {
     setCreating(false);
     setEditing(tour);
+    editingIdRef.current = tour.id;
+    setTourDates([]);
+    setNewDate('');
+    setNewCapacity(20);
+    void loadTourDates(tour.id);
     reset({
       title: tour.title, departureLocation: tour.departureLocation, destination: tour.destination, category: tour.category, duration: tour.duration,
-      price: tour.price, availableSeats: tour.availableSeats, featured: tour.featured, status: tour.status,
+      price: tour.price, childPrice: tour.childPrice ?? NaN, childMaxAge: tour.childMaxAge ?? NaN, freeCancelHours: tour.freeCancelHours ?? NaN,
+      minGuests: tour.minGuests, maxGuests: tour.maxGuests, availableSeats: tour.availableSeats, featured: tour.featured, status: tour.status,
       description: tour.description, images: tour.images.join('\n'),
       transportation: tour.transportation,
       includedServices: tour.includedServices.join('\n'),
       excludedServices: tour.excludedServices.join('\n'),
     });
+    setAddons(
+      (Array.isArray(tour.addons) ? tour.addons : []).map((a) => ({
+        name: String(a?.name ?? ''),
+        price: Number(a?.price) || 0,
+        perPerson: Boolean(a?.perPerson),
+      })),
+    );
     const days = Array.isArray(tour.itinerary) && tour.itinerary.length > 0 ? tour.itinerary : blankItinerary();
     setItinerary(normalizeItinerary(days.map((d) => ({ ...d, activities: d.activities.length > 0 ? [...d.activities] : [''] }))));
   };
 
   const splitLines = (v: string) => String(v ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
+
+  const addTourDate = async () => {
+    if (!editing || !newDate) return;
+    try {
+      await api.post(`/admin/tours/${editing.id}/dates`, { date: newDate, capacity: Number(newCapacity) || 1 });
+      toast.success(t('adminTours.saved'));
+      setNewDate('');
+      await loadTourDates(editing.id);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, t('adminTours.saveFailed')));
+    }
+  };
+
+  const removeTourDate = async (dateId: string) => {
+    if (!editing) return;
+    try {
+      await api.delete(`/admin/tours/dates/${dateId}`);
+      toast.success(t('adminTours.deleted'));
+      setDeleteDateId(null);
+      await loadTourDates(editing.id);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, t('adminTours.deleteFailed')));
+      setDeleteDateId(null);
+    }
+  };
 
   const submit = async (v: typeof empty & { category: string; status: string }) => {
     // Client-side itinerary validation (backend re-validates with zod + duration match).
@@ -90,16 +185,56 @@ export function ToursManage() {
       toast.error(t('itinerary.mismatchDays', { days: days.length, duration: v.duration }));
       return;
     }
+    const price = Number(v.price);
+    const seats = Number(v.availableSeats);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(seats) || seats < 0) {
+      toast.error(t('adminTours.saveFailed'));
+      return;
+    }
+    // Child pricing: empty = no child tickets. NaN renders as empty input.
+    const childPriceRaw = Number(v.childPrice);
+    const hasChildPrice = Number.isFinite(childPriceRaw) && childPriceRaw > 0;
+    const childPrice = hasChildPrice ? Math.floor(childPriceRaw) : null;
+    // Clearing the price also clears the age (backend requires age => price).
+    const childMaxAgeRaw = Number(v.childMaxAge);
+    const childMaxAge =
+      hasChildPrice && Number.isFinite(childMaxAgeRaw) && childMaxAgeRaw >= 1 ? Math.floor(childMaxAgeRaw) : null;
+    if (childPrice !== null && childPrice >= price) {
+      toast.error(t('adminTours.saveFailed'));
+      return;
+    }
+    if (childMaxAge !== null && childPrice === null) {
+      toast.error(t('adminTours.saveFailed'));
+      return;
+    }
+    const freeCancelRaw = Number(v.freeCancelHours);
+    const freeCancelHours = Number.isFinite(freeCancelRaw) && freeCancelRaw >= 1 ? Math.floor(freeCancelRaw) : null;
+    // Add-ons: ids derived from names (stable across edits while names stay).
+    const taken = new Set<string>();
+    const addonPayload: Array<{ id: string; name: string; price: number; perPerson: boolean }> = [];
+    for (const a of addons) {
+      const name = a.name.trim();
+      const ap = Math.floor(Number(a.price));
+      if (!name || name.length < 2 || !Number.isFinite(ap) || ap <= 0) {
+        toast.error(t('adminTours.saveFailed'));
+        return;
+      }
+      addonPayload.push({ id: slugifyAddon(name, taken), name, price: ap, perPerson: Boolean(a.perPerson) });
+    }
     const payload = {
       title: v.title,
       departureLocation: v.departureLocation,
       destination: v.destination,
       category: v.category,
       duration: v.duration,
-      price: Number(v.price),
-      minGuests: 1,
-      maxGuests: 20,
-      availableSeats: Number(v.availableSeats),
+      price,
+      childPrice,
+      childMaxAge,
+      freeCancelHours,
+      addons: addonPayload,
+      minGuests: Math.max(1, Number(v.minGuests) || 1),
+      maxGuests: Math.max(Number(v.minGuests) || 1, Number(v.maxGuests) || 20),
+      availableSeats: seats,
       featured: Boolean(v.featured),
       status: v.status,
       description: v.description,
@@ -114,8 +249,9 @@ export function ToursManage() {
       else await api.post('/admin/tours', payload);
       toast.success(t('adminTours.saved'));
       setEditing(null);
+      editingIdRef.current = null;
       setCreating(false);
-      load();
+      await load();
     } catch (err) {
       toast.error(apiErrorMessage(err, t('adminTours.saveFailed')));
     }
@@ -128,7 +264,7 @@ export function ToursManage() {
       setDeleteId(null);
       // Step back if the last item of the page was removed.
       if (tours.length === 1 && page > 1) setPage(page - 1);
-      else load();
+      else await load();
     } catch (err) {
       toast.error(apiErrorMessage(err, t('adminTours.deleteFailed')));
       setDeleteId(null);
@@ -137,9 +273,21 @@ export function ToursManage() {
 
   return (
     <div>
-      <div className="flex justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-slate-500">{t('adminTours.count', { count: pagination?.total ?? tours.length })}</p>
-        <Button onClick={openCreate}>{t('adminTours.newTour')}</Button>
+        <div className="flex items-center gap-2">
+          <span className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden />
+            <Input
+              value={qInput}
+              onChange={(e) => setQInput(e.target.value)}
+              placeholder={t('tours.searchPlaceholder')}
+              aria-label={t('tours.search')}
+              className="w-52 pl-9"
+            />
+          </span>
+          <Button onClick={openCreate}>{t('adminTours.newTour')}</Button>
+        </div>
       </div>
 
       {(creating || editing) && (
@@ -158,8 +306,8 @@ export function ToursManage() {
               <span className="mb-1.5 block text-sm font-medium text-slate-700">{t('adminTours.transportation')}</span>
               <div className="flex flex-wrap gap-3">
                 {TRANSPORT_MODES.map((m) => (
-                  <label key={m} className="flex items-center gap-1.5 text-sm text-slate-700">
-                    <input type="checkbox" value={m} {...register('transportation')} className="h-4 w-4 rounded border-slate-300 text-teal-600" />
+                  <label key={m} className="flex min-h-11 cursor-pointer items-center gap-1.5 rounded-lg px-1 text-sm text-slate-700 transition-colors hover:bg-slate-50 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-orange-700">
+                    <input type="checkbox" value={m} {...register('transportation')} className="h-4 w-4 rounded border-slate-300 accent-orange-700" />
                     {labels.transportation(m)}
                   </label>
                 ))}
@@ -167,26 +315,128 @@ export function ToursManage() {
             </div>
             <Field label={t('adminTours.duration')}><Input {...register('duration', { required: true })} placeholder={t('adminTours.durationPlaceholder')} /></Field>
             <Field label={t('adminTours.price')}><Input type="number" {...register('price', { valueAsNumber: true })} /></Field>
+            <Field label={t('adminTours.childPrice', { defaultValue: 'Giá trẻ em (trống = không bán)' }) as string} hint={t('adminTours.childPriceHint', { defaultValue: 'Phải thấp hơn giá người lớn' }) as string}>
+              <Input type="number" min={1} {...register('childPrice', { valueAsNumber: true })} />
+            </Field>
+            <Field label={t('adminTours.childMaxAge', { defaultValue: 'Tuổi tối đa vé TE' }) as string}>
+              <Input type="number" min={1} max={17} {...register('childMaxAge', { valueAsNumber: true })} />
+            </Field>
+            <Field label={t('adminTours.freeCancelHours', { defaultValue: 'Hủy miễn phí trước (giờ)' }) as string} hint={t('adminTours.freeCancelHint', { defaultValue: 'Trống = linh hoạt đến ngày đi' }) as string}>
+              <Input type="number" min={1} max={720} {...register('freeCancelHours', { valueAsNumber: true })} />
+            </Field>
+            <Field label={t('adminTours.minGuests')}><Input type="number" min={1} {...register('minGuests', { valueAsNumber: true })} /></Field>
+            <Field label={t('adminTours.maxGuests')}><Input type="number" min={1} max={100} {...register('maxGuests', { valueAsNumber: true })} /></Field>
             <Field label={t('adminTours.seats')}><Input type="number" {...register('availableSeats', { valueAsNumber: true })} /></Field>
+            {editing && (
+              <div className="md:col-span-2">
+                <span className="mb-1.5 block text-sm font-medium text-slate-700">{t('adminTours.dates')}</span>
+                <div className="space-y-2">
+                  {tourDates.length === 0 && (
+                    <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">{t('tours.emptyTitle')}</p>
+                  )}
+                  {tourDates.map((d) => (
+                    <div key={d.id} className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm">
+                      <span className="tabular-nums text-slate-900">{formatDateStr(d.date)}</span>
+                      <span className="flex items-center gap-2 text-xs tabular-nums text-slate-500">
+                        {d.booked}/{d.capacity}
+                        <RowAction tone="red" onClick={() => setDeleteDateId(d.id)}>{t('adminTours.delete')}</RowAction>
+                      </span>
+                    </div>
+                  ))}
+                  <div className="flex flex-wrap items-end gap-2 pt-1">
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-slate-500">{t('tourDetails.travelDate')}</span>
+                      <Input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} className="w-auto" />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-slate-500">{t('adminTours.capacity')}</span>
+                      <Input type="number" min={1} value={newCapacity} onChange={(e) => setNewCapacity(Number(e.target.value))} className="w-24" />
+                    </label>
+                    <Button type="button" variant="secondary" onClick={() => void addTourDate()} disabled={!newDate}>
+                      {t('adminTours.addDate')}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
             <Field label={t('adminTours.status')}>
               <Select {...register('status')}><option value="ACTIVE">ACTIVE</option><option value="INACTIVE">INACTIVE</option></Select>
             </Field>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" {...register('featured')} /> {t('adminTours.featured')}</label>
-            <div className="md:col-span-2"><Field label={t('adminTours.description')}><Input {...register('description', { required: true })} /></Field></div>
+            <div className="md:col-span-2"><Field label={t('adminTours.description')}><Textarea {...register('description', { required: true })} rows={2} /></Field></div>
             <div className="md:col-span-2">
               <Field label={t('adminTours.images')}>
-                <textarea {...register('images', { required: true })} rows={3} className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm outline-none focus:border-teal-500" />
+                <Textarea {...register('images', { required: true })} rows={3} />
               </Field>
             </div>
             <div className="md:col-span-2">
               <Field label={`${t('adminTours.includedServices')} (${t('adminTours.servicesHint')})`}>
-                <textarea {...register('includedServices', { required: true })} rows={4} className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm outline-none focus:border-teal-500" />
+                <Textarea {...register('includedServices', { required: true })} rows={4} />
               </Field>
             </div>
             <div className="md:col-span-2">
               <Field label={`${t('adminTours.excludedServices')} (${t('adminTours.servicesHint')})`}>
-                <textarea {...register('excludedServices', { required: true })} rows={4} className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm outline-none focus:border-teal-500" />
+                <Textarea {...register('excludedServices', { required: true })} rows={4} />
               </Field>
+            </div>
+            <div className="md:col-span-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-slate-700">
+                  {t('adminTours.addons', { defaultValue: 'Dịch vụ bổ sung' }) as string}
+                </span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setAddons((prev) => [...prev, { name: '', price: 100000, perPerson: true }])}
+                >
+                  + {t('adminTours.addAddon', { defaultValue: 'Thêm dịch vụ' }) as string}
+                </Button>
+              </div>
+              {addons.length === 0 ? (
+                <p className="mt-2 rounded-xl bg-slate-50 p-3 text-xs text-slate-500">
+                  {t('adminTours.noAddons', { defaultValue: 'Chưa có dịch vụ bổ sung — khách chỉ trả tiền tour.' }) as string}
+                </p>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  {addons.map((a, i) => (
+                    <div key={i} className="flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <label className="min-w-40 flex-1">
+                        <span className="mb-1 block text-xs font-medium text-slate-500">
+                          {t('adminTours.addonName', { defaultValue: 'Tên dịch vụ' }) as string}
+                        </span>
+                        <Input
+                          value={a.name}
+                          onChange={(e) => setAddons((prev) => prev.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
+                          placeholder={t('adminTours.addonNamePh', { defaultValue: 'VD: Xe đón riêng' }) as string}
+                        />
+                      </label>
+                      <label className="block w-36">
+                        <span className="mb-1 block text-xs font-medium text-slate-500">
+                          {t('adminTours.price')}
+                        </span>
+                        <Input
+                          type="number"
+                          min={1}
+                          value={Number.isFinite(a.price) ? a.price : ''}
+                          onChange={(e) => setAddons((prev) => prev.map((x, j) => (j === i ? { ...x, price: Number(e.target.value) } : x)))}
+                        />
+                      </label>
+                      <label className="flex min-h-11 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-xs text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={a.perPerson}
+                          onChange={(e) => setAddons((prev) => prev.map((x, j) => (j === i ? { ...x, perPerson: e.target.checked } : x)))}
+                          className="h-4 w-4 rounded border-slate-300 accent-orange-700"
+                        />
+                        {t('adminTours.perPerson', { defaultValue: 'Tính theo khách' }) as string}
+                      </label>
+                      <RowAction tone="red" onClick={() => setAddons((prev) => prev.filter((_, j) => j !== i))}>
+                        {t('adminTours.delete')}
+                      </RowAction>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="md:col-span-2">
               <div className="flex items-center justify-between">
@@ -203,15 +453,14 @@ export function ToursManage() {
                 {itinerary.map((d, di) => (
                   <div key={di} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-teal-700">{t('itinerary.day', { day: di + 1 })}</span>
-                      <button
-                        type="button"
+                      <span className="text-sm font-semibold text-orange-700">{t('itinerary.day', { day: di + 1 })}</span>
+                      <RowAction
+                        tone="red"
                         disabled={itinerary.length <= 1}
                         onClick={() => setItinerary((prev) => prev.filter((_, i) => i !== di))}
-                        className="text-sm font-semibold text-red-600 hover:underline disabled:opacity-40"
                       >
                         {t('itinerary.removeDay')}
-                      </button>
+                      </RowAction>
                     </div>
                     <div className="mt-2">
                       <Field label={t('itinerary.dayTitle')}>
@@ -238,20 +487,19 @@ export function ToursManage() {
                             type="button"
                             disabled={d.activities.length <= 1}
                             onClick={() => setItinerary((prev) => prev.map((x, i) => (i === di ? { ...x, activities: x.activities.filter((_, j) => j !== ai) } : x)))}
-                            className="shrink-0 rounded-xl border border-slate-200 px-2.5 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-40"
+                            className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 text-sm text-red-600 transition-colors hover:bg-red-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700 active:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
                             aria-label={t('itinerary.removeActivity')}
                           >
-                            −
+                            <span aria-hidden>−</span>
                           </button>
                         </div>
                       ))}
-                      <button
+                      <RowAction
                         type="button"
                         onClick={() => setItinerary((prev) => prev.map((x, i) => (i === di ? { ...x, activities: [...x.activities, ''] } : x)))}
-                        className="text-sm font-semibold text-teal-700 hover:underline"
                       >
                         + {t('itinerary.addActivity')}
-                      </button>
+                      </RowAction>
                     </div>
                   </div>
                 ))}
@@ -259,34 +507,44 @@ export function ToursManage() {
             </div>
             <div className="flex gap-2 md:col-span-2">
               <Button type="submit">{t('adminTours.save')}</Button>
-              <Button type="button" variant="secondary" onClick={() => { setEditing(null); setCreating(false); }}>{t('adminTours.cancel')}</Button>
+              <Button type="button" variant="secondary" onClick={() => { setEditing(null); editingIdRef.current = null; setCreating(false); }}>{t('adminTours.cancel')}</Button>
             </div>
           </form>
         </Card>
       )}
 
-      <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-        <table className="w-full min-w-180 text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-            <tr><th className="px-4 py-3">{t('adminTours.title')}</th><th className="px-4 py-3">{t('adminTours.price')}</th><th className="px-4 py-3">{t('adminTours.seats')}</th><th className="px-4 py-3">{t('adminTours.status')}</th><th className="px-4 py-3 text-right">{t('admin.actions')}</th></tr>
+      <TableCard>
+        <table className="w-full min-w-180 text-left">
+          <thead className="bg-slate-50">
+            <tr><Th>{t('adminTours.title')}</Th><Th>{t('adminTours.price')}</Th><Th>{t('adminTours.seats')}</Th><Th>{t('adminTours.status')}</Th><Th right>{t('admin.actions')}</Th></tr>
           </thead>
           <tbody>
+            {tours.length === 0 && (
+              <TableEmpty colSpan={5}>{t('tours.emptyTitle')}</TableEmpty>
+            )}
             {tours.map((tour) => (
-              <tr key={tour.id} className="border-t border-slate-100">
-                <td className="max-w-70 px-4 py-3"><p className="truncate font-medium">{tour.title}</p><p className="text-xs text-slate-400">{tour.departureLocation} → {tour.destination} · {labels.category(tour.category)}</p></td>
-                <td className="px-4 py-3">{formatCurrency(tour.price)}</td>
-                <td className="px-4 py-3">{tour.availableSeats}</td>
-                <td className="px-4 py-3">{tour.status}{tour.featured ? ' ★' : ''}</td>
-                <td className="px-4 py-3 text-right">
-                  <button onClick={() => openEdit(tour)} className="mr-3 font-semibold text-teal-700 hover:underline">{t('adminTours.edit')}</button>
-                  <button onClick={() => setDeleteId(tour.id)} className="font-semibold text-red-600 hover:underline">{t('adminTours.delete')}</button>
-                </td>
+              <tr key={tour.id} className="transition-colors hover:bg-slate-50/60">
+                <Td className="max-w-70"><p className="truncate font-medium text-slate-900">{tour.title}{tour.featured ? ' ★' : ''}</p><p className="mt-0.5 truncate text-xs text-slate-400">{tour.departureLocation} → {tour.destination} · {labels.category(tour.category)}</p></Td>
+                <Td className="tabular-nums">{formatCurrency(tour.price)}</Td>
+                <Td className="tabular-nums">{tour.availableSeats}</Td>
+                <Td>
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${tour.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}>
+                    {tour.status === 'ACTIVE' ? t('adminTours.active') : t('adminTours.inactive')}
+                  </span>
+                </Td>
+                <Td right>
+                  <span className="inline-flex items-center gap-1">
+                    <RowAction onClick={() => openEdit(tour)}>{t('adminTours.edit')}</RowAction>
+                    <RowAction tone="red" onClick={() => setDeleteId(tour.id)}>{t('adminTours.delete')}</RowAction>
+                  </span>
+                </Td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
+      </TableCard>
       <ConfirmDialog open={deleteId !== null} title={t('adminTours.deleteTitle')} message={t('adminTours.deleteMessage')} confirmLabel={t('adminTours.deleteConfirm')} cancelLabel={t('adminTours.cancel')} onClose={() => setDeleteId(null)} onConfirm={() => deleteId && void remove(deleteId)} />
+      <ConfirmDialog open={deleteDateId !== null} title={t('adminTours.deleteDateTitle')} message={t('adminTours.deleteDateMessage')} confirmLabel={t('adminTours.deleteConfirm')} cancelLabel={t('adminTours.cancel')} onClose={() => setDeleteDateId(null)} onConfirm={() => deleteDateId && void removeTourDate(deleteDateId)} />
       <AdminPagination pagination={pagination} onPage={setPage} />
     </div>
   );

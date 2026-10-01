@@ -28,8 +28,18 @@ export function translateBackendError(message: string, fallback?: string): strin
     ['Not your booking', t('backendErrors.notYourBooking')],
     ['Booking already cancelled', t('backendErrors.alreadyCancelled')],
     ['Completed booking cannot be cancelled', t('backendErrors.completedNoCancel')],
+    ['Invalid status transition', t('backendErrors.invalidTransition')],
+    ['Cannot cancel a tour that already started', t('backendErrors.tourStartedNoCancel')],
+    ['Too many requests, please try again later', t('backendErrors.rateLimited')],
+    ['Reset link is invalid or expired', t('backendErrors.resetInvalid')],
+    ['This date is sold out', t('backendErrors.dateSoldOut')],
+    ['Cannot modify a booking that already started', t('backendErrors.tourStartedNoModify')],
+    ['Only upcoming bookings can be modified', t('backendErrors.upcomingOnlyModify')],
+    ['Paid bookings cannot be modified', t('backendErrors.paidNoModify')],
+    ['Capacity cannot be below booked seats', t('backendErrors.capacityBelowBooked')],
     ['This booking has already been reviewed', t('backendErrors.alreadyReviewed')],
     ['Only completed bookings can be reviewed', t('backendErrors.completedOnlyReview')],
+    ['Tour has not taken place yet', t('backendErrors.tourNotFinished')],
     ['Booking not found', t('backendErrors.bookingNotFound')],
     ['Admin access required', t('backendErrors.adminRequired')],
     ['Unauthorized', t('backendErrors.unauthorized')],
@@ -40,10 +50,24 @@ export function translateBackendError(message: string, fallback?: string): strin
     ['Resource not found', t('backendErrors.resourceNotFound')],
     ['Operation violates data constraints (record is in use)', t('backendErrors.recordInUse')],
     ['Cannot delete tour with existing bookings', t('backendErrors.tourHasBookings')],
+    ['Tour does not offer child tickets', t('backendErrors.childNotOffered')],
+    ['At least one adult is required', t('backendErrors.adultRequired')],
+    ['Selected add-ons are invalid', t('backendErrors.addonsInvalid')],
+    ['Free cancellation period has ended', t('backendErrors.freeCancelEnded')],
+    ['Cannot vote your own review', t('backendErrors.ownVote')],
+    ['Admin accounts cannot place bookings', t('backendErrors.adminNoBooking')],
     ['You cannot modify your own account', t('adminUsers.selfActionForbidden')],
+    ['Guest name is required', t('validation.guestNameRequired')],
+    ['Name is required', t('validation.nameRequired')],
+    ['Invalid phone number', t('validation.phoneInvalid')],
   ];
   for (const [key, value] of exact) {
     if (msg === key) return value;
+  }
+  // Zod field errors arrive as "path: message" (e.g. "guestsList.0.fullName: ...")
+  // — match those by their message tail too.
+  for (const [key, value] of exact) {
+    if (msg.endsWith(`: ${key}`)) return value;
   }
 
   // "Coupon requires minimum order of 1.000.000₫" (amount varies)

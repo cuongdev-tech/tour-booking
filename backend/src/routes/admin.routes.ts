@@ -5,7 +5,11 @@ import { validateBody } from '../middleware/common.js';
 import {
   patchCouponSchema,
   patchTourSchema,
+  setReadSchema,
+  tourDateSchema,
   updateBookingStatusSchema,
+  updatePaymentStatusSchema,
+  updateReviewVisibilitySchema,
   updateUserSchema,
   upsertCouponSchema,
   upsertTourSchema,
@@ -22,7 +26,22 @@ router.patch('/tours/:id', validateBody(patchTourSchema), c.updateTour);
 router.delete('/tours/:id', c.deleteTour);
 
 router.get('/bookings', c.listBookings);
+router.get('/payments/awaiting', c.awaitingPayments);
+router.get('/bookings/:id', c.getBooking);
 router.patch('/bookings/:id', validateBody(updateBookingStatusSchema), c.updateBookingStatus);
+router.patch('/bookings/:id/payment', validateBody(updatePaymentStatusSchema), c.updatePaymentStatus);
+
+router.get('/reviews', c.listReviews);
+router.patch('/reviews/:id', validateBody(updateReviewVisibilitySchema), c.setReviewHidden);
+router.delete('/reviews/:id', c.deleteReview);
+
+router.get('/contact', c.listContact);
+router.patch('/contact/:id', validateBody(setReadSchema), c.setContactRead);
+router.delete('/contact/:id', c.deleteContact);
+
+router.get('/tours/:id/dates', c.listTourDates);
+router.post('/tours/:id/dates', validateBody(tourDateSchema), c.upsertTourDate);
+router.delete('/tours/dates/:dateId', c.deleteTourDate);
 
 router.get('/users', c.listUsers);
 router.patch('/users/:id', validateBody(updateUserSchema), c.updateUser);

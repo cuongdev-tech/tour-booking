@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button } from '../ui/kit';
+import { Button, Modal } from '../ui/kit';
 
 export function ConfirmDialog({
   open,
@@ -22,28 +22,33 @@ export function ConfirmDialog({
   useEffect(() => {
     if (!open) setBusy(false);
   }, [open ]);
-  if (!open) return null;
+  // Cancel/Escape/overlay always stay available, even mid-request: the async
+  // work runs to completion in the background (its toast still reports the
+  // outcome), so a hung network can never trap the dialog open.
+  const cancel = () => {
+    setBusy(false);
+    onClose();
+  };
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
-        <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
-        <p className="mt-2 text-sm text-slate-600">{message}</p>
-        <div className="mt-6 flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
-            {cancelLabel}
-          </Button>
-          <Button
-            variant="danger"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              onConfirm();
-            }}
-          >
-            {confirmLabel}
-          </Button>
-        </div>
+    <Modal open={open} onClose={cancel} label={title}>
+      <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
+      <p className="mt-2 text-sm leading-relaxed break-words text-slate-600">{message}</p>
+      <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button variant="secondary" onClick={cancel} className="w-full sm:w-auto">
+          {cancelLabel}
+        </Button>
+        <Button
+          variant="danger"
+          isLoading={busy}
+          onClick={() => {
+            setBusy(true);
+            onConfirm();
+          }}
+          className="w-full sm:w-auto"
+        >
+          {busy ? `${confirmLabel}…` : confirmLabel}
+        </Button>
       </div>
-    </div>
+    </Modal>
   );
 }

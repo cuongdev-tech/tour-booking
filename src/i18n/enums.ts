@@ -52,6 +52,8 @@ export function useEnumLabels() {
       switch (v) {
         case 'PENDING':
           return t('enums.statusPending');
+        case 'AWAITING_CONFIRMATION':
+          return t('enums.payAwaiting');
         case 'PAID':
           return t('enums.payPaid');
         case 'FAILED':

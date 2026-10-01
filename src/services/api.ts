@@ -14,11 +14,17 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err?.response?.status === 401 && !window.location.pathname.startsWith('/login')) {
-      const msg: string = err.response.data?.message ?? '';
-      if (msg.toLowerCase().includes('token')) {
-        localStorage.removeItem('tourbooking_token');
-      }
+    // Any 401 means the token is rejected (expired/invalid/missing scope) —
+    // drop it regardless of the message wording so a dead token can't linger.
+    // AuthContext listens for 'auth:expired' to clear user state too, otherwise
+    // the UI keeps showing a logged-in user whose every request fails.
+    // Skip the cleanup when the failing request carried no token (public pages
+    // like /register or password reset): there is nothing to drop and no
+    // session to clear.
+    const sentToken = Boolean(err?.config?.headers?.Authorization);
+    if (sentToken && err?.response?.status === 401 && !window.location.pathname.startsWith('/login')) {
+      localStorage.removeItem('tourbooking_token');
+      window.dispatchEvent(new Event('auth:expired'));
     }
     return Promise.reject(err);
   },

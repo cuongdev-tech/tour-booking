@@ -5,11 +5,18 @@ import { toast } from 'sonner';
 import { api, apiErrorMessage } from '../../services/api';
 import { formatMoney } from '../../i18n/format';
 import type { Coupon, Pagination } from '../../types';
-import { Button, Card, Field, Input, Select } from '../../components/ui/kit';
+import { Button, Card, Field, Input, RowAction, Select, TableCard, TableEmpty, Td, Th } from '../../components/ui/kit';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { AdminPagination } from './Pagination';
 
 const empty = { code: '', type: 'PERCENT', value: 10, minOrder: 1000000, expiresAt: '', usageLimit: 100, active: true };
+
+/** Local YYYY-MM-DD for <input type="date"> (UTC slice shifts the day in +07). */
+function toLocalDateInput(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 export function CouponsManage() {
   const { t } = useTranslation();
@@ -28,7 +35,7 @@ export function CouponsManage() {
         setCoupons(r.data.data);
         setPagination(r.data.pagination);
       })
-      .catch(() => toast.error(t('adminCoupons.loadFailed')));
+      .catch((err) => toast.error(apiErrorMessage(err, t('adminCoupons.loadFailed'))));
   useEffect(() => { void load(page); }, [page]);
 
   const openCreate = () => {
@@ -45,8 +52,9 @@ export function CouponsManage() {
       type: c.type,
       value: c.value,
       minOrder: c.minOrder,
-      expiresAt: c.expiresAt.slice(0, 10),
-      usageLimit: c.usageLimit ?? 100,
+      expiresAt: toLocalDateInput(c.expiresAt),
+      // NaN renders as an empty input and submits back as unlimited (null).
+      usageLimit: c.usageLimit ?? NaN,
       active: c.active,
     });
   };
@@ -57,16 +65,25 @@ export function CouponsManage() {
   };
 
   const submit = async (v: typeof empty & { type: string }) => {
-    const payload = {
-      ...(editing ? {} : { code: v.code }),
-      type: v.type,
-      value: Number(v.value),
-      minOrder: Number(v.minOrder),
-      expiresAt: new Date(v.expiresAt).toISOString(),
-      usageLimit: Number(v.usageLimit),
-      active: v.active,
-    };
     try {
+      // Send the date-only string untouched: the backend treats YYYY-MM-DD as
+      // valid through the end of that day (a full ISO would expire at 00:00 UTC).
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v.expiresAt)) throw new Error('Invalid expiry date');
+      const value = Number(v.value);
+      const minOrder = Number(v.minOrder);
+      if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(minOrder) || minOrder < 0) {
+        throw new Error('Invalid numbers');
+      }
+      const usageLimit = Number(v.usageLimit);
+      const payload = {
+        ...(editing ? {} : { code: v.code }),
+        type: v.type,
+        value,
+        minOrder,
+        expiresAt: v.expiresAt,
+        usageLimit: Number.isNaN(usageLimit) ? null : usageLimit,
+        active: v.active,
+      };
       if (editing) {
         await api.patch(`/admin/coupons/${editing.id}`, payload);
         toast.success(t('adminCoupons.updated'));
@@ -76,7 +93,7 @@ export function CouponsManage() {
       }
       closeForm();
       reset();
-      load();
+      await load();
     } catch (err) {
       toast.error(apiErrorMessage(err, editing ? t('adminCoupons.updateFailed') : t('adminCoupons.createFailed')));
     }
@@ -85,7 +102,8 @@ export function CouponsManage() {
   const toggle = async (c: Coupon) => {
     try {
       await api.patch(`/admin/coupons/${c.id}`, { active: !c.active });
-      load();
+      toast.success(t('adminCoupons.updated'));
+      await load();
     } catch (err) {
       toast.error(apiErrorMessage(err, t('adminCoupons.updateFailed')));
     }
@@ -107,7 +125,7 @@ export function CouponsManage() {
 
   return (
     <div>
-      <div className="flex justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-slate-500">{t('adminCoupons.count', { count: pagination?.total ?? coupons.length })}</p>
         <Button onClick={openCreate}>{t('adminCoupons.newCoupon')}</Button>
       </div>
@@ -124,7 +142,7 @@ export function CouponsManage() {
             <Field label={t('adminCoupons.value')}><Input type="number" {...register('value', { valueAsNumber: true })} /></Field>
             <Field label={t('adminCoupons.minOrder')}><Input type="number" {...register('minOrder', { valueAsNumber: true })} /></Field>
             <Field label={t('adminCoupons.expiresAt')}><Input type="date" {...register('expiresAt', { required: true })} /></Field>
-            <Field label={t('adminCoupons.usageLimit')}><Input type="number" {...register('usageLimit', { valueAsNumber: true })} /></Field>
+            <Field label={t('adminCoupons.usageLimit')} hint={t('adminCoupons.unlimited')}><Input type="number" {...register('usageLimit', { valueAsNumber: true })} /></Field>
             <div className="flex items-end gap-2 md:col-span-3">
               <Button type="submit">{editing ? t('adminCoupons.update') : t('adminCoupons.create')}</Button>
               <Button type="button" variant="secondary" onClick={closeForm}>{t('adminCoupons.cancel')}</Button>
@@ -132,28 +150,39 @@ export function CouponsManage() {
           </form>
         </Card>
       )}
-      <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-        <table className="w-full min-w-170 text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-            <tr><th className="px-4 py-3">{t('adminCoupons.code')}</th><th className="px-4 py-3">{t('adminCoupons.value')}</th><th className="px-4 py-3">{t('adminCoupons.used')}</th><th className="px-4 py-3">{t('adminCoupons.active')}</th><th className="px-4 py-3 text-right">{t('admin.actions')}</th></tr>
+      <TableCard>
+        <table className="w-full min-w-220 text-left">
+          <thead className="bg-slate-50">
+            <tr><Th>{t('adminCoupons.code')}</Th><Th>{t('adminCoupons.value')}</Th><Th>{t('adminCoupons.minOrder')}</Th><Th>{t('adminCoupons.expiresAt')}</Th><Th>{t('adminCoupons.used')}</Th><Th>{t('adminCoupons.active')}</Th><Th right>{t('admin.actions')}</Th></tr>
           </thead>
           <tbody>
+            {coupons.length === 0 && (
+              <TableEmpty colSpan={7}>{t('tours.emptyTitle')}</TableEmpty>
+            )}
             {coupons.map((c) => (
-              <tr key={c.id} className="border-t border-slate-100">
-                <td className="px-4 py-3 font-mono font-bold">{c.code}</td>
-                <td className="px-4 py-3">{c.type === 'PERCENT' ? `${c.value}%` : formatMoney(c.value)}</td>
-                <td className="px-4 py-3">{c.usedCount}{c.usageLimit ? `/${c.usageLimit}` : ''}</td>
-                <td className="px-4 py-3">{c.active ? t('common.yes') : t('common.no')}</td>
-                <td className="px-4 py-3 text-right">
-                  <button onClick={() => openEdit(c)} className="mr-3 font-semibold text-teal-700 hover:underline">{t('adminTours.edit')}</button>
-                  <button onClick={() => void toggle(c)} className="mr-3 font-semibold text-teal-700 hover:underline">{c.active ? t('adminCoupons.deactivate') : t('adminCoupons.activate')}</button>
-                  <button onClick={() => setDeleteId(c.id)} className="font-semibold text-red-600 hover:underline">{t('adminCoupons.delete')}</button>
-                </td>
+              <tr key={c.id} className="transition-colors hover:bg-slate-50/60">
+                <Td className="font-mono font-bold text-slate-900">{c.code}</Td>
+                <Td className="tabular-nums">{c.type === 'PERCENT' ? `${c.value}%` : formatMoney(c.value)}</Td>
+                <Td className="tabular-nums">{formatMoney(c.minOrder)}</Td>
+                <Td className="whitespace-nowrap tabular-nums">{toLocalDateInput(c.expiresAt)}</Td>
+                <Td className="tabular-nums">{c.usedCount}{c.usageLimit ? `/${c.usageLimit}` : ''}</Td>
+                <Td>
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${c.active ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'}`}>
+                    {c.active ? t('common.yes') : t('common.no')}
+                  </span>
+                </Td>
+                <Td right>
+                  <span className="inline-flex items-center gap-1">
+                    <RowAction onClick={() => openEdit(c)}>{t('adminTours.edit')}</RowAction>
+                    <RowAction onClick={() => void toggle(c)}>{c.active ? t('adminCoupons.deactivate') : t('adminCoupons.activate')}</RowAction>
+                    <RowAction tone="red" onClick={() => setDeleteId(c.id)}>{t('adminCoupons.delete')}</RowAction>
+                  </span>
+                </Td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
+      </TableCard>
       <ConfirmDialog open={deleteId !== null} title={t('adminCoupons.deleteTitle')} message={t('adminCoupons.deleteMessage')} confirmLabel={t('adminCoupons.deleteConfirm')} cancelLabel={t('adminCoupons.cancel')} onClose={() => setDeleteId(null)} onConfirm={() => deleteId && void remove(deleteId)} />
       <AdminPagination pagination={pagination} onPage={setPage} />
     </div>
