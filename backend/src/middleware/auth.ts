@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
+import { prisma } from '../config/env.js';
 import { verifyToken } from '../utils/auth.js';
 import { AppError } from '../utils/helpers.js';
 
@@ -46,9 +47,17 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction): 
   next();
 }
 
-export function requireAdmin(req: Request, _res: Response, next: NextFunction): void {
+export async function requireAdmin(req: Request, _res: Response, next: NextFunction): Promise<void> {
   if (!req.user) throw new AppError(401, 'Unauthorized');
-  if (req.user.role !== 'ADMIN') throw new AppError(403, 'Admin access required');
+  // Token claims đi kèm 7 ngày: role/status trong token có thể cũ (vừa bị hạ
+  // quyền/khóa). Đọc live từ DB trên các route nhạy cảm (lưu lượng thấp).
+  const dbUser = await prisma.user.findUnique({
+    where: { id: req.user.id },
+    select: { role: true, status: true },
+  });
+  if (!dbUser || dbUser.status !== 'ACTIVE' || dbUser.role !== 'ADMIN') {
+    throw new AppError(403, 'Admin access required');
+  }
   next();
 }
 
@@ -57,8 +66,14 @@ export function requireAdmin(req: Request, _res: Response, next: NextFunction): 
  * everything but never book — they test the customer flow with a CUSTOMER
  * account instead of self-dealing on their own bookings.
  */
-export function requireCustomer(req: Request, _res: Response, next: NextFunction): void {
+export async function requireCustomer(req: Request, _res: Response, next: NextFunction): Promise<void> {
   if (!req.user) throw new AppError(401, 'Unauthorized');
-  if (req.user.role !== 'CUSTOMER') throw new AppError(403, 'Admin accounts cannot place bookings');
+  // Như requireAdmin: tài khoản bị khóa/hạ quyền không được đặt tour bằng token cũ.
+  const dbUser = await prisma.user.findUnique({
+    where: { id: req.user.id },
+    select: { role: true, status: true },
+  });
+  if (!dbUser || dbUser.status !== 'ACTIVE') throw new AppError(403, 'Account is disabled');
+  if (dbUser.role !== 'CUSTOMER') throw new AppError(403, 'Admin accounts cannot place bookings');
   next();
 }

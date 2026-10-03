@@ -2,6 +2,7 @@ import { Router } from 'express';
 import * as c from '../controllers/admin.controller.js';
 import { requireAdmin, requireAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/common.js';
+import { asyncHandler } from '../utils/helpers.js';
 import {
   patchCouponSchema,
   patchTourSchema,
@@ -17,9 +18,8 @@ import {
 } from '../validators/schemas.js';
 
 const router = Router();
-router.use(requireAuth, requireAdmin);
+router.use(requireAuth, asyncHandler(requireAdmin));
 
-router.get('/stats', c.stats);
 router.get('/revenue/overview', c.revenueOverview);
 router.get('/revenue/daily', c.revenueDaily);
 

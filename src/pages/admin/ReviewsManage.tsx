@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { api, apiErrorMessage } from '../../services/api';
+import { formatDateTimeStr } from '../../i18n/format';
 import type { Pagination, Review } from '../../types';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { AdminPagination } from './Pagination';
@@ -155,7 +156,7 @@ export function ReviewsManage() {
                 {r.user?.name ?? (t('tourDetails.travelerDefault') as string)} — {t('adminReviews.stars', { count: r.rating })} — {r.tour?.title ?? r.tourId}
               </p>
               <p className="text-[12px] font-normal whitespace-nowrap text-neutral-400 tabular-nums">
-                {formatTime(r.createdAt)} | {r.hidden ? (t('adminReviews.hidden') as string) : (t('adminReviews.visibleTab') as string)} | {t('adminReviews.helpful', { count: r.helpfulCount ?? 0 })}
+                {formatDateTimeStr(r.createdAt)} | {r.hidden ? (t('adminReviews.hidden') as string) : (t('adminReviews.visibleTab') as string)} | {t('adminReviews.helpful', { count: r.helpfulCount ?? 0 })}
               </p>
             </div>
             <p className="mt-2 text-[13px] font-normal text-neutral-600">{r.comment || '—'}</p>
@@ -240,10 +241,4 @@ export function ReviewsManage() {
       />
     </div>
   );
-}
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }

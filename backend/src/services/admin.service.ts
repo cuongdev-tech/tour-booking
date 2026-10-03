@@ -32,52 +32,6 @@ async function listPaged<T>(
   return { data, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } };
 }
 
-export async function getStats() {
-  // Chart window: first day of the month 5 months ago (6 zero-filled buckets).
-  const now = new Date();
-  const windowStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
-  const [users, tours, bookings, revenue, byStatus, paidRecent] = await Promise.all([
-    prisma.user.count(),
-    prisma.tour.count(),
-    prisma.booking.count(),
-    // Real collected money only: captured payments, not booking totals.
-    prisma.payment.aggregate({
-      where: { status: 'PAID' },
-      _sum: { amount: true },
-    }),
-    prisma.booking.groupBy({ by: ['bookingStatus'], _count: { bookingStatus: true } }),
-    // Bounded to the displayed window (legacy rows get paidAt from the
-    // backfill migration, so totals and months stay consistent).
-    prisma.payment.findMany({
-      where: { status: 'PAID', paidAt: { gte: windowStart } },
-      select: { amount: true, paidAt: true },
-      orderBy: { paidAt: 'asc' },
-    }),
-  ]);
-  // Last 6 calendar months, zero-filled — months without revenue report 0.
-  const months: Array<{ key: string; label: string; total: number }> = [];
-  for (let i = 5; i >= 0; i -= 1) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-    months.push({ key, label: `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`, total: 0 });
-  }
-  const byMonth = new Map(months.map((m) => [m.key, m]));
-  for (const p of paidRecent) {
-    if (!p.paidAt) continue;
-    const key = `${p.paidAt.getUTCFullYear()}-${String(p.paidAt.getUTCMonth() + 1).padStart(2, '0')}`;
-    const bucket = byMonth.get(key);
-    if (bucket) bucket.total += p.amount;
-  }
-  return {
-    users,
-    tours,
-    bookings,
-    revenue: revenue._sum.amount ?? 0,
-    bookingsByStatus: byStatus.map((r) => ({ status: r.bookingStatus, count: r._count.bookingStatus })),
-    revenueByMonth: months,
-  };
-}
-
 export function adminListTours(page?: unknown, limit?: unknown, q?: string) {
   const { page: p, limit: l } = pageParams(page, limit);
   const run = async () => {

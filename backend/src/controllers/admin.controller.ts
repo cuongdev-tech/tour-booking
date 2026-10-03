@@ -4,10 +4,6 @@ import * as reviewService from '../services/review.service.js';
 import * as contactService from '../services/contact.service.js';
 import { AppError, asyncHandler } from '../utils/helpers.js';
 
-export const stats = asyncHandler(async (_req: Request, res: Response) => {
-  res.json(await service.getStats());
-});
-
 export const listTours = asyncHandler(async (req: Request, res: Response) => {
   const q = typeof req.query.q === 'string' ? req.query.q : undefined;
   res.json(await service.adminListTours(req.query.page, req.query.limit, q));

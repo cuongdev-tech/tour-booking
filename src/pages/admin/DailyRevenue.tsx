@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { api, apiErrorMessage } from '../../services/api';
 import { useEnumLabels } from '../../i18n/enums';
+import { formatDateTimeStr } from '../../i18n/format';
 import { formatCurrency } from '../../types';
 import { Button, Pager, Skeleton, StatusBadge } from '../../components/ui/kit';
 
@@ -159,7 +160,7 @@ export function DailyRevenue() {
                   <tr key={tx.id} className="border-t border-neutral-100 transition-colors hover:bg-neutral-50/60">
                     <td className="px-4 py-3 font-mono text-xs tabular-nums text-neutral-900">{tx.bookingCode || tx.id.slice(0, 8)}</td>
                     <td className="px-4 py-3 text-[13px] font-normal tabular-nums text-neutral-600">
-                      {new Date(tx.time).toLocaleString('vi-VN', { hour12: false })}
+                      {formatDateTimeStr(tx.time)}
                     </td>
                     <td className="max-w-70 px-4 py-3">
                       <p className="truncate text-[13px] font-medium text-neutral-900" title={tx.tourTitle}>
