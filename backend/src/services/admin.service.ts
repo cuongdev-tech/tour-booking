@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../config/env.js';
 import { parseDurationDays, type ItineraryDay } from '../validators/schemas.js';
 import { AppError, toSafeUser } from '../utils/helpers.js';
+import { monthBounds, parseDay, vnDayStartUTC, vnMonthKey } from '../utils/revenue-time.js';
 import { matchTextIds, toCalendarDay } from './tour.service.js';
 
 function slugify(title: string): string {
@@ -567,16 +568,8 @@ export async function adminDeleteTourDate(id: string) {
 
 // ---------------------------------------------------------------------------
 // Doanh thu tổng quan theo tháng (màn Tổng quan kinh doanh) + báo cáo theo ngày
+// (biên giờ VN nằm ở utils/revenue-time.ts để test được mà không cần DB)
 // ---------------------------------------------------------------------------
-
-function monthBounds(month: number, year: number): { start: Date; end: Date } {
-  const m = Math.min(12, Math.max(1, Math.floor(month)));
-  const y = Math.floor(year);
-  return {
-    start: new Date(Date.UTC(y, m - 1, 1)),
-    end: new Date(Date.UTC(y, m, 1)),
-  };
-}
 
 /**
  * Tổng quan kinh doanh của 1 tháng:
@@ -601,8 +594,8 @@ export async function getRevenueOverview(monthInput?: unknown, yearInput?: unkno
   // Chặn năm vô lý (Date.UTC vẫn chạy nhưng query vô nghĩa + label lạ).
   const safeYear = Math.min(2100, Math.max(2000, Math.floor(yearRaw)));
   const { start, end } = monthBounds(safeMonth, safeYear);
-  const yearStart = new Date(Date.UTC(safeYear, 0, 1));
-  const yearEnd = new Date(Date.UTC(safeYear + 1, 0, 1));
+  const yearStart = vnDayStartUTC(safeYear, 1, 1);
+  const yearEnd = vnDayStartUTC(safeYear + 1, 1, 1);
 
   const [paidInMonth, bookingsInMonth, toursActive, paidInYear] = await Promise.all([
     prisma.payment.findMany({
@@ -651,8 +644,8 @@ export async function getRevenueOverview(monthInput?: unknown, yearInput?: unkno
   const trendByKey = new Map(trend.map((t) => [t.key, t]));
   for (const p of paidInYear) {
     if (!p.paidAt) continue;
-    const key = `${p.paidAt.getUTCFullYear()}-${String(p.paidAt.getUTCMonth() + 1).padStart(2, '0')}`;
-    const bucket = trendByKey.get(key);
+    // Xếp theo tháng VN hiển thị (không phải tháng UTC) để khớp cửa sổ VN.
+    const bucket = trendByKey.get(vnMonthKey(p.paidAt));
     if (bucket) {
       bucket.total += p.amount;
       bucket.orders += 1;
@@ -671,35 +664,6 @@ export async function getRevenueOverview(monthInput?: unknown, yearInput?: unkno
     byCategory,
     trend,
   };
-}
-
-function parseDay(input?: unknown): { start: Date; end: Date; label: string } | null {
-  if (typeof input !== 'string' || !input.trim()) return null;
-  const raw = input.trim();
-  // Chấp nhận YYYY-MM-DD (từ <input type="date">) hoặc ISO đầy đủ.
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
-  let y: number;
-  let mo: number;
-  let d: number;
-  if (m) {
-    y = Number(m[1]);
-    mo = Number(m[2]);
-    d = Number(m[3]);
-  } else {
-    const parsed = new Date(raw);
-    if (Number.isNaN(parsed.getTime())) return null;
-    y = parsed.getUTCFullYear();
-    mo = parsed.getUTCMonth() + 1;
-    d = parsed.getUTCDate();
-  }
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
-  const start = new Date(Date.UTC(y, mo - 1, d));
-  if (Number.isNaN(start.getTime())) return null;
-  // Date.UTC tự lăn ngày tràn (02-30 -> 03-02): so sánh ngược để loại.
-  if (start.getUTCFullYear() !== y || start.getUTCMonth() !== mo - 1 || start.getUTCDate() !== d) return null;
-  const end = new Date(Date.UTC(y, mo - 1, d + 1));
-  const label = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-  return { start, end, label };
 }
 
 /**

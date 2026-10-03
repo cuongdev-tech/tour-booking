@@ -8,8 +8,8 @@ export function AdminLayout() {
   const { pathname } = useLocation();
 
   const tabs = [
-    { to: '/admin', label: 'Tổng quan', icon: LayoutDashboard, exact: true },
-    { to: '/admin/doanh-thu-ngay', label: 'Doanh thu ngày', icon: Wallet, exact: false },
+    { to: '/admin', label: t('admin.dashboard'), icon: LayoutDashboard, exact: true },
+    { to: '/admin/doanh-thu-ngay', label: t('admin.daily'), icon: Wallet, exact: false },
     { to: '/admin/tours', label: t('admin.tours'), icon: Map, exact: false },
     { to: '/admin/bookings', label: t('admin.bookings'), icon: CalendarCheck, exact: false },
     { to: '/admin/users', label: t('admin.users'), icon: Users, exact: false },
