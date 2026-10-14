@@ -4,6 +4,7 @@ import { requireAdmin, requireAuth } from '../middleware/auth.js';
 import { validateBody } from '../middleware/common.js';
 import { asyncHandler } from '../utils/helpers.js';
 import { rateLimit } from '../middleware/security.js';
+import { setReadSchema } from '../validators/schemas.js';
 import { z } from 'zod';
 
 const createContactSchema = z.object({
@@ -12,12 +13,11 @@ const createContactSchema = z.object({
   phone: z
     .string()
     .regex(/^[0-9+\s-]{8,20}$/, 'Invalid phone number')
+    .refine((s) => s === '' || (s.match(/[0-9]/g) ?? []).length >= 6, 'Invalid phone number')
     .optional()
     .or(z.literal('')),
   message: z.string().min(10, 'Message is too short').max(2000),
 });
-
-const setReadSchema = z.object({ isRead: z.boolean() });
 
 const router = Router();
 // Public inbox drop-off — same throttling pattern as coupon validation.

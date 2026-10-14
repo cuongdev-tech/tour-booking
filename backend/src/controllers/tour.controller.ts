@@ -15,9 +15,12 @@ export const list = asyncHandler(async (req: Request, res: Response) => {
     minRating: req.query.minRating ? Number(req.query.minRating) : undefined,
     featured: req.query.featured === 'true' ? true : req.query.featured === 'false' ? false : undefined,
     status: 'ACTIVE',
-    sort: (req.query.sort as 'price_asc' | 'price_desc' | 'rating' | 'newest') ?? 'newest',
+    sort: (req.query.sort as 'price_asc' | 'price_desc' | 'rating' | 'newest' | 'departure_earliest') ?? 'newest',
     page: req.query.page ? Number(req.query.page) : 1,
     limit: req.query.limit ? Number(req.query.limit) : 9,
+    date: typeof req.query.date === 'string' ? req.query.date : undefined,
+    guests: req.query.guests ? Number(req.query.guests) : undefined,
+    availableOnly: req.query.availableOnly === 'true' ? true : undefined,
   });
   res.json(result);
 });

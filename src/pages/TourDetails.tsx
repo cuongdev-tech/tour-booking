@@ -8,15 +8,16 @@ import { api, apiErrorMessage } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useEnumLabels } from '../i18n/enums';
 import { useServiceLabel } from '../i18n/services';
-import { formatCurrency, type Review, type Tour } from '../types';
+import { formatCurrency, type PriceTier, type Review, type Tour, type TourQuestion } from '../types';
 import { formatDateStr } from '../i18n/format';
-import { todayLocalInput } from '../utils/date';
+import { resolveUnitPrice } from '../utils/pricing';
+import { todayUtcInput, startOfTodayUtc } from '../utils/date';
 import { destinationMapEmbed, destinationMapLink } from '../data/destinations';
 import { pushRecent } from '../hooks/useRecentlyViewed';
 import { TourCard } from '../components/tour/TourCard';
 import { AvailabilityCalendar } from '../components/tour/AvailabilityCalendar';
 import { FavoriteButton } from '../components/tour/TourCard';
-import { Button, Card, EmptyState, Input, Modal, PageContainer, QuantityStepper, RetryState, SafeImage, SectionHeader, Skeleton, Stars } from '../components/ui/kit';
+import { Button, Card, EmptyState, Input, Modal, PageContainer, QuantityStepper, RetryState, SafeImage, SectionHeader, Skeleton, Stars, Textarea } from '../components/ui/kit';
 import { useDocumentMeta } from '../hooks/useDocumentMeta';
 
 export function TourDetails() {
@@ -41,6 +42,11 @@ export function TourDetails() {
   const bookCardRef = useRef<HTMLDivElement>(null);
   const [showBar, setShowBar] = useState(false);
   const [dateAvail, setDateAvail] = useState<{ managed: boolean; remaining: number | null } | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [questions, setQuestions] = useState<TourQuestion[]>([]);
+  const [newQuestion, setNewQuestion] = useState('');
+  const [qSubmitting, setQSubmitting] = useState(false);
   useDocumentMeta(tour?.title ?? '', tour?.description);
 
   useEffect(() => {
@@ -72,7 +78,8 @@ export function TourDetails() {
         if (!ctrl.signal.aborted) setLoading(false);
       });
     return () => ctrl.abort();
-  }, [id, t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, t, loadAttempt]);
 
   // Mobile sticky booking bar: UI-only layer, appears once the booking card scrolls out of view.
   useEffect(() => {
@@ -118,7 +125,7 @@ export function TourDetails() {
 
   const voteHelpful = async (reviewId: string) => {
     if (!user) {
-      toast.error(t('tourCard.loginToFavorite'));
+      toast.error(t('tourDetails.loginToVote'));
       return;
     }
     try {
@@ -133,26 +140,64 @@ export function TourDetails() {
         /* ignore */
       }
     } catch (err) {
-      toast.error(apiErrorMessage(err, t('bookings.reviewFailed')));
+      toast.error(apiErrorMessage(err, t('tourDetails.voteFailed')));
     }
   };
 
   // Per-date availability for the picked day (managed dates only; open dates
-  // fall back to the tour's global seats).
+  // fall back to the tour's global seats). A failed check assumes an open date
+  // so booking never dead-locks — the backend enforces the real bucket.
   useEffect(() => {
     if (!tour || !date) {
       setDateAvail(null);
       return;
     }
     const ctrl = new AbortController();
+    setDateAvail(null);
     api
       .get(`/tours/${tour.id}/availability`, { params: { date }, signal: ctrl.signal })
       .then((r) => setDateAvail({ managed: r.data.managed, remaining: r.data.remaining }))
       .catch(() => {
-        if (!ctrl.signal.aborted) setDateAvail(null);
+        if (!ctrl.signal.aborted) setDateAvail({ managed: false, remaining: null });
       });
     return () => ctrl.abort();
   }, [tour, date]);
+
+  // Hỏi & đáp của tour (public list, cần login để hỏi).
+  useEffect(() => {
+    if (!id) return;
+    setIsPrivate(false);
+    const ctrl = new AbortController();
+    api
+      .get(`/tours/${id}/questions`, { signal: ctrl.signal })
+      .then((r) => setQuestions((r.data.data ?? []).filter((q: TourQuestion) => !q.hidden)))
+      .catch(() => undefined);
+    return () => ctrl.abort();
+  }, [id]);
+
+  const submitQuestion = async () => {
+    if (!user) {
+      toast.error(t('tourDetails.loginToAsk', { defaultValue: 'Đăng nhập để đặt câu hỏi' }) as string);
+      return;
+    }
+    const q = newQuestion.trim();
+    if (!q || !id) return;
+    setQSubmitting(true);
+    try {
+      const { data } = await api.post(`/tours/${id}/questions`, { question: q });
+      if (data.question) setQuestions((prev) => [data.question, ...prev]);
+      else {
+        const r = await api.get(`/tours/${id}/questions`);
+        setQuestions((r.data.data ?? []).filter((q: TourQuestion) => !q.hidden));
+      }
+      setNewQuestion('');
+      toast.success(t('tourDetails.questionSent', { defaultValue: 'Đã gửi câu hỏi' }) as string);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, t('tourDetails.questionFailed', { defaultValue: 'Gửi câu hỏi thất bại' }) as string));
+    } finally {
+      setQSubmitting(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -168,7 +213,7 @@ export function TourDetails() {
   if (loadFailed) {
     return (
       <PageContainer className="py-8 md:py-10">
-        <RetryState title={t('tours.loadError')} onRetry={() => window.location.reload()} retryLabel={t('tours.retry')} />
+        <RetryState title={t('tours.loadError')} onRetry={() => setLoadAttempt((a) => a + 1)} retryLabel={t('tours.retry')} />
       </PageContainer>
     );
   }
@@ -183,13 +228,18 @@ export function TourDetails() {
   const maxGuests = Math.min(tour.maxGuests, tour.availableSeats);
   const soldOut = tour.availableSeats <= 0;
   // Seats shown once a date is picked: managed dates report their own bucket,
-  // open dates fall back to the global counter.
+  // open dates fall back to the global counter. While the bucket is loading
+  // (dateAvail === null) seats are UNKNOWN — never show global as fact.
+  const seatsUnknown = date !== '' && dateAvail === null;
   const dateManaged = date !== '' && dateAvail?.managed === true;
-  const shownSeats = dateManaged && dateAvail?.remaining !== null && dateAvail?.remaining !== undefined
-    ? dateAvail.remaining
-    : tour.availableSeats;
-  const dateSoldOut = dateManaged && shownSeats <= 0;
-  const bookDisabled = soldOut || dateSoldOut;
+  const shownSeats = seatsUnknown
+    ? tour.availableSeats
+    : dateManaged && dateAvail?.remaining !== null && dateAvail?.remaining !== undefined
+      ? dateAvail.remaining
+      : tour.availableSeats;
+  const dateSoldOut = !seatsUnknown && dateManaged && shownSeats <= 0;
+  const dateIsPast = date !== '' && !Number.isNaN(Date.parse(date)) && Date.parse(date) < startOfTodayUtc();
+  const bookDisabled = soldOut || dateSoldOut || seatsUnknown || dateIsPast || date === '';
   // The party size is capped by the picked date's bucket too — not just the
   // global counter — so "5 guests on a date with 2 seats left" fails here,
   // not after checkout.
@@ -197,8 +247,14 @@ export function TourDetails() {
   // Hint shows the effective bookable max (seats-limited), never below the minimum.
   const hintMax = date === '' ? Math.max(tour.minGuests, maxGuests) : effectiveMax;
   const party = adults + children;
-  const hasChildPrice = tour.childPrice != null && tour.childPrice > 0;
-  const partySubtotal = adults * tour.price + (hasChildPrice ? children * (tour.childPrice as number) : 0);
+  const tourExt = tour as Tour & { priceTiers?: PriceTier[] | null; privateAvailable?: boolean | null; privateSurcharge?: number | null };
+  const priceTiers = Array.isArray(tourExt.priceTiers) ? tourExt.priceTiers : [];
+  const privateAvailable = tourExt.privateAvailable === true;
+  const privateSurcharge = tourExt.privateSurcharge ?? 0;
+  const privateEffective = privateAvailable && isPrivate;
+  const tierUnits = resolveUnitPrice(tour, party);
+  const hasChildPrice = tierUnits.childPrice != null && tierUnits.childPrice > 0;
+  const partySubtotal = adults * tierUnits.price + (hasChildPrice ? children * (tierUnits.childPrice as number) : 0);
   const setAdultsClamped = (n: number) => {
     const na = Math.min(Math.max(n, 1), effectiveMax);
     setAdults(na);
@@ -210,18 +266,27 @@ export function TourDetails() {
   const bookNow = () => {
     if (user?.role === 'ADMIN') {
       toast.error(t('backendErrors.adminNoBooking', { defaultValue: 'Tài khoản quản trị không thể đặt tour, hãy dùng tài khoản khách hàng' }) as string);
-      navigate('/admin');
+      navigate('/admin/bookings');
       return;
     }
-    if (!date) {
+    if (user && (user.emailVerified ?? false) === false) {
+      toast.error(t('auth.verifyRequired', { defaultValue: 'Bạn cần xác thực email trước khi đặt tour.' }) as string);
+      navigate('/verify-email');
+      return;
+    }
+    if (!date || dateIsPast) {
       toast.error(t('tourDetails.chooseDate'));
+      return;
+    }
+    if (seatsUnknown) {
+      toast.error(t('tours.loadError'));
       return;
     }
     if (party < tour.minGuests || party > effectiveMax) {
       toast.error(t('tourDetails.guestsRange', { min: tour.minGuests, max: effectiveMax }));
       return;
     }
-    navigate(`/checkout?tourId=${tour.id}&date=${date}&adults=${adults}&children=${children}`);
+    navigate(`/checkout?tourId=${tour.id}&date=${date}&adults=${adults}&children=${children}${privateEffective ? '&private=1' : ''}`);
   };
   // Free-cancellation deadline for the picked date (policy text only; the
   // backend enforces it on paid bookings).
@@ -229,6 +294,10 @@ export function TourDetails() {
     tour.freeCancelHours != null && date !== '' && !Number.isNaN(new Date(date).getTime())
       ? new Date(new Date(date).getTime() - tour.freeCancelHours * 3600_000).toISOString()
       : null;
+  const cancelBadgeText =
+    tour.freeCancelHours == null
+      ? (t('tourDetails.freeCancelFlexible', { defaultValue: 'Hủy miễn phí linh hoạt' }) as string)
+      : (t('tourDetails.freeCancelHoursShort', { defaultValue: 'Hủy miễn phí trước {{hours}} giờ khởi hành', hours: tour.freeCancelHours }) as string);
   const mapEmbed = destinationMapEmbed(tour.destination);
   const mapLink = destinationMapLink(tour.destination);
 
@@ -236,6 +305,9 @@ export function TourDetails() {
     { icon: MapPin, label: t('tourDetails.departure'), value: tour.departureLocation },
     { icon: MapPin, label: t('tourDetails.destination'), value: tour.destination },
     { icon: Clock, label: t('tourDetails.duration'), value: tour.duration },
+    ...(tour.departureHour != null
+      ? [{ icon: Clock, label: 'Giờ KH', value: `${String(tour.departureHour).padStart(2, '0')}:00` }]
+      : []),
     { icon: Bus, label: t('tourDetails.transportation'), value: tour.transportation.map((m) => labels.transportation(m)).join(' + ') },
   ];
 
@@ -387,6 +459,7 @@ export function TourDetails() {
                 {reviews.map((r) => {
                   const vote = helpful[r.id] ?? { voted: false, count: r.helpfulCount ?? 0 };
                   const images = Array.isArray(r.images) ? r.images : [];
+                  const videos = Array.isArray(r.videos) ? r.videos : [];
                   return (
                     <div key={r.id} className="border-b border-slate-100 pb-5 last:border-0 last:pb-0">
                       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -394,7 +467,14 @@ export function TourDetails() {
                           <span className="flex h-10 w-10 items-center justify-center rounded-full bg-orange-700 text-sm font-bold text-white" aria-hidden>
                             {(r.user?.name ?? '?').charAt(0).toUpperCase()}
                           </span>
-                          <span className="font-semibold text-slate-900">{r.user?.name ?? t('tourDetails.travelerDefault')}</span>
+                          <span>
+                            <span className="font-semibold text-slate-900">{r.user?.name ?? t('tourDetails.travelerDefault')}</span>
+                            {(r.verifiedTrip === true) && (
+                              <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
+                                ✓ {t('tourDetails.verifiedTrip', { defaultValue: 'Đã đi tour' }) as string}
+                              </span>
+                            )}
+                          </span>
                         </span>
                         <Stars value={r.rating} />
                       </div>
@@ -411,6 +491,13 @@ export function TourDetails() {
                             >
                               <SafeImage src={src} alt="" className="h-full w-full object-cover" />
                             </button>
+                          ))}
+                        </div>
+                      )}
+                      {videos.length > 0 && (
+                        <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                          {videos.map((src, i) => (
+                            <video key={`${r.id}-vid-${i}`} src={src} controls preload="metadata" className="h-28 w-44 shrink-0 rounded-xl border border-slate-200 bg-black" />
                           ))}
                         </div>
                       )}
@@ -431,6 +518,55 @@ export function TourDetails() {
                 })}
               </div>
             )}
+          </Card>
+
+          <Card className="mt-6 p-5 sm:p-7">
+            <h2 className="text-xl font-bold tracking-tight text-slate-900">
+              {t('tourDetails.qaTitle', { defaultValue: 'Hỏi & Đáp' }) as string}
+            </h2>
+            {questions.length === 0 ? (
+              <p className="mt-3 text-sm text-slate-500">
+                {t('tourDetails.qaEmpty', { defaultValue: 'Chưa có câu hỏi nào. Hãy là người đầu tiên hỏi!' }) as string}
+              </p>
+            ) : (
+              <div className="mt-4 space-y-4">
+                {questions.map((q) => (
+                  <div key={q.id} className="rounded-xl border border-slate-100 bg-slate-50/60 p-4">
+                    <p className="text-sm font-semibold text-slate-900">
+                      {q.user?.name ?? t('tourDetails.travelerDefault')}
+                      <span className="ml-2 text-xs font-normal text-slate-400">{formatDateStr(q.createdAt)}</span>
+                    </p>
+                    <p className="mt-1.5 text-[15px] text-slate-700">{q.question}</p>
+                    {q.answer ? (
+                      <div className="mt-2.5 rounded-lg bg-emerald-50 p-3 text-sm leading-relaxed text-emerald-900">
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">
+                          {t('tourDetails.qaAnswer', { defaultValue: 'Shop trả lời' }) as string}
+                          {q.answeredAt && <span className="ml-2 font-normal normal-case">· {formatDateStr(q.answeredAt)}</span>}
+                        </p>
+                        <p className="mt-1">{q.answer}</p>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs italic text-slate-400">
+                        {t('tourDetails.qaWaiting', { defaultValue: 'Đang chờ shop trả lời...' }) as string}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-4">
+              <Textarea
+                value={newQuestion}
+                onChange={(e) => setNewQuestion(e.target.value)}
+                rows={3}
+                maxLength={1000}
+                placeholder={t('tourDetails.qaPlaceholder', { defaultValue: 'Đặt câu hỏi về tour này...' }) as string}
+                aria-label={t('tourDetails.qaTitle', { defaultValue: 'Hỏi & Đáp' }) as string}
+              />
+              <Button className="mt-2" isLoading={qSubmitting} onClick={() => void submitQuestion()}>
+                {t('tourDetails.qaSubmit', { defaultValue: 'Gửi câu hỏi' }) as string}
+              </Button>
+            </div>
           </Card>
 
           {mapEmbed && (
@@ -473,6 +609,9 @@ export function TourDetails() {
                     <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">{t('tourDetails.from')}</p>
                     <p className="mt-1 text-3xl font-bold tabular-nums tracking-tight text-white">{formatCurrency(tour.price)}</p>
                     <p className="mt-0.5 text-xs text-slate-400">{t('tourDetails.perGuest')}</p>
+                    <p className="mt-2 inline-flex rounded-full bg-emerald-400/20 px-3 py-1 text-xs font-bold text-emerald-200">
+                      {cancelBadgeText}
+                    </p>
                     {hasChildPrice && (
                       <p className="mt-1.5 text-xs tabular-nums text-slate-300">
                         {t('tourDetails.childPrice', { defaultValue: 'Trẻ em' }) as string}: {formatCurrency(tour.childPrice as number)}
@@ -487,8 +626,8 @@ export function TourDetails() {
                 {/* Seats are only meaningful alongside a travel date — don't claim
                     availability before one is picked. */}
                 {date !== '' && (
-                  <p className={`mt-4 inline-flex rounded-full px-3 py-1 text-xs font-bold ${shownSeats <= 0 ? 'bg-red-500/20 text-red-200' : shownSeats <= 5 ? 'bg-amber-400/20 text-amber-200' : 'bg-emerald-400/20 text-emerald-200'}`}>
-                    {t('tourDetails.seatsAvailable', { count: shownSeats })}
+                  <p className={`mt-4 inline-flex rounded-full px-3 py-1 text-xs font-bold ${seatsUnknown ? 'bg-slate-500/20 text-slate-200' : shownSeats <= 0 ? 'bg-red-500/20 text-red-200' : shownSeats <= 5 ? 'bg-amber-400/20 text-amber-200' : 'bg-emerald-400/20 text-emerald-200'}`}>
+                    {seatsUnknown ? '…' : t('tourDetails.seatsAvailable', { count: shownSeats })}
                   </p>
                 )}
               </div>
@@ -500,7 +639,7 @@ export function TourDetails() {
                   <Input
                     type="date"
                     value={date}
-                    min={todayLocalInput()}
+                    min={todayUtcInput()}
                     onChange={(e) => setDate(e.target.value)}
                     aria-label={t('tourDetails.travelDate')}
                     className="mt-2"
@@ -517,7 +656,7 @@ export function TourDetails() {
                         value={adults}
                         min={1}
                         max={effectiveMax}
-                        disabled={soldOut || dateSoldOut}
+                        disabled={soldOut || dateSoldOut || seatsUnknown}
                         onChange={setAdultsClamped}
                         decreaseLabel={t('tourDetails.decreaseGuests')}
                         increaseLabel={t('tourDetails.increaseGuests')}
@@ -533,7 +672,7 @@ export function TourDetails() {
                           value={children}
                           min={0}
                           max={Math.max(0, effectiveMax - adults)}
-                          disabled={soldOut || dateSoldOut}
+                          disabled={soldOut || dateSoldOut || seatsUnknown}
                           onChange={setChildrenClamped}
                           decreaseLabel={t('tourDetails.decreaseGuests')}
                           increaseLabel={t('tourDetails.increaseGuests')}
@@ -543,7 +682,7 @@ export function TourDetails() {
                     )}
                   </div>
                   <p className="mt-1.5 text-xs text-slate-400">
-                    {soldOut
+                    {soldOut || dateSoldOut
                       ? t('tourDetails.soldOut')
                       : t('tourDetails.guestsMinMax', { min: tour.minGuests, max: hintMax })}
                   </p>
@@ -558,7 +697,51 @@ export function TourDetails() {
                       {adults} × {formatCurrency(tour.price)} + {children} × {formatCurrency(tour.childPrice as number)}
                     </p>
                   )}
+                  {privateEffective && privateSurcharge > 0 && (
+                    <p className="mt-1 flex justify-between text-xs tabular-nums text-slate-500">
+                      <span>{t('tourDetails.privateSurcharge', { defaultValue: 'Phụ thu đi riêng' }) as string}</span>
+                      <span>+{formatCurrency(privateSurcharge)}</span>
+                    </p>
+                  )}
                 </div>
+                {priceTiers.length > 0 && (
+                  <div className="rounded-2xl border border-slate-200 p-4 text-sm">
+                    <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      {t('tourDetails.groupPrice', { defaultValue: 'Giá theo đoàn' }) as string}
+                    </p>
+                    <ul className="mt-2 space-y-1.5">
+                      {priceTiers.map((tier, i) => (
+                        <li key={i} className="flex justify-between gap-2 text-sm text-slate-600">
+                          <span>{t('tourDetails.groupTier', { defaultValue: 'Từ {{count}} khách', count: tier.minGuests }) as string}</span>
+                          <span className="font-semibold tabular-nums text-slate-900">
+                            {formatCurrency(tier.price)}{t('tourDetails.perGuestShort', { defaultValue: '/khách' }) as string}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {privateAvailable && (
+                  <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-slate-200 p-3.5 text-sm transition-colors hover:border-orange-300">
+                    <input
+                      type="checkbox"
+                      checked={isPrivate}
+                      onChange={(e) => setIsPrivate(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-orange-700"
+                    />
+                    <span>
+                      <span className="font-semibold text-slate-900">
+                        {t('tourDetails.privateTour', { defaultValue: 'Đi riêng đoàn' }) as string}
+                        {privateSurcharge > 0 && (
+                          <span className="tabular-nums"> (+{formatCurrency(privateSurcharge)})</span>
+                        )}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-slate-500">
+                        {t('tourDetails.privateHint', { defaultValue: 'Riêng đoàn, không ghép khách khác' }) as string}
+                      </span>
+                    </span>
+                  </label>
+                )}
                 {tour.freeCancelHours != null && (
                   <p className="rounded-xl bg-emerald-50 p-3 text-xs leading-relaxed text-emerald-700">
                     {cancelDeadline

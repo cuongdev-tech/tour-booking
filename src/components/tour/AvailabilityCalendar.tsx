@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { api } from '../../services/api';
 import { currentIntlLocale } from '../../i18n/format';
+import { startOfTodayUtc } from '../../utils/date';
  
 interface DayInfo {
   date: string;
@@ -42,6 +43,11 @@ export function AvailabilityCalendar({
   const [cache, setCache] = useState<Record<string, DayInfo[]>>({});
   const [loading, setLoading] = useState(false);
 
+  // Tour change must not reuse another tour's month cache.
+  useEffect(() => {
+    setCache({});
+  }, [tourId]);
+
   // Sync calendar view when the picked date changes from elsewhere.
   useEffect(() => {
     if (!value) return;
@@ -52,23 +58,28 @@ export function AvailabilityCalendar({
   }, [value]);
 
   useEffect(() => {
-    const key = monthKey(viewY, viewM);
+    const key = `${tourId}:${monthKey(viewY, viewM)}`;
     if (cache[key] || !tourId) return;
     const ctrl = new AbortController();
     setLoading(true);
     api
-      .get(`/tours/${tourId}/availability`, { params: { month: key }, signal: ctrl.signal })
+      .get(`/tours/${tourId}/availability`, { params: { month: monthKey(viewY, viewM) }, signal: ctrl.signal })
       .then((r) => {
         setCache((prev) => ({ ...prev, [key]: (r.data.days ?? []) as DayInfo[] }));
       })
-      .catch(() => undefined)
+      .catch((err) => {
+        // Abort is expected on month switch — never touch state then.
+        if (err?.code === 'ERR_CANCELED') return;
+      })
       .finally(() => {
         if (!ctrl.signal.aborted) setLoading(false);
       });
     return () => ctrl.abort();
-  }, [tourId, viewY, viewM, cache]);
+    // cache excluded: guarded by early-return above; including it refetches every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourId, viewY, viewM]);
 
-  const days = cache[monthKey(viewY, viewM)] ?? [];
+  const days = cache[`${tourId}:${monthKey(viewY, viewM)}`] ?? [];
   const byDate = useMemo(() => new Map(days.map((d) => [d.date, d])), [days]);
 
   const monthLabel = useMemo(() => {
@@ -147,7 +158,10 @@ export function AvailabilityCalendar({
           const day = i + 1;
           const key = `${monthKey(viewY, viewM)}-${String(day).padStart(2, '0')}`;
           const info = byDate.get(key);
-          const past = info ? info.past : new Date(viewY, viewM, day) < new Date(today.getFullYear(), today.getMonth(), today.getDate());
+          // UTC frame like backend + TourDetails/Checkout guards: a YYYY-MM-DD
+          // parses as UTC midnight, so compare UTC days (not local midnight).
+          const utcDay = Date.UTC(viewY, viewM, day);
+          const past = info ? info.past : utcDay < startOfTodayUtc();
           const remaining = info ? info.remaining : null;
           const soldOut = info ? remaining !== null && remaining <= 0 : false;
           const low = info ? remaining !== null && remaining > 0 && remaining <= 5 : false;
@@ -156,7 +170,7 @@ export function AvailabilityCalendar({
             <button
               key={key}
               type="button"
-              disabled={past}
+              disabled={past || soldOut}
               onClick={() => onChange(key)}
               aria-label={key}
               aria-pressed={selected}
@@ -171,7 +185,7 @@ export function AvailabilityCalendar({
                       : low
                         ? 'border-amber-200 bg-amber-50 font-semibold text-amber-800 hover:border-amber-400'
                         : 'border-slate-100 bg-white font-medium text-slate-700 hover:border-orange-300 hover:bg-orange-50'
-              } ${past && !selected ? 'cursor-not-allowed' : ''}`}
+              } ${past || soldOut ? 'cursor-not-allowed' : ''}`}
             >
               <span>{day}</span>
               {info && !past && remaining !== null && !selected && (

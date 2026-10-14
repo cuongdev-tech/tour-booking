@@ -139,6 +139,8 @@ export interface Translation {
     decreaseGuests: string;
     increaseGuests: string;
     helpful: string;
+    loginToVote: string;
+    voteFailed: string;
     openMap: string;
     childPrice: string;
     childMaxAge: string;
@@ -238,6 +240,7 @@ export interface Translation {
     resetTitle: string;
     resetHint: string;
     resetSent: string;
+    mailDisabled: string;
     newPassword: string;
     resetSuccess: string;
     sendResetLink: string;
@@ -293,6 +296,7 @@ export interface Translation {
     modifySuccess: string;
     modifyFailed: string;
     invoice: string;
+    invoiceFailed: string;
     childDob: string;
     reviewPhotos: string;
     addPhotos: string;
@@ -386,6 +390,7 @@ export interface Translation {
     collectedHint: string;
     bookingsCount: string;
     paidHint: string;
+    pending: string;
     code: string;
     time: string;
     content: string;
@@ -544,10 +549,19 @@ export interface Translation {
     markUnread: string;
     delete: string;
     deleteTitle: string;
+    deleteMessage: string;
     deleted: string;
     deleteFailed: string;
     loadFailed: string;
     updateFailed: string;
+    replied: string;
+    replyPh: string;
+    replyBtn: string;
+    sending: string;
+    replyRequired: string;
+    replySent: string;
+    replyFailed: string;
+    myReply: string;
   };
   contact: {
     title: string;
@@ -635,12 +649,13 @@ export interface Translation {
     resourceNotFound: string;
     recordInUse: string;
     tourHasBookings: string;
-    childNotOffered?: string;
-    adultRequired?: string;
-    addonsInvalid?: string;
-    freeCancelEnded?: string;
-    ownVote?: string;
-    adminNoBooking?: string;
+    childNotOffered: string;
+    adultRequired: string;
+    addonsInvalid: string;
+    freeCancelEnded: string;
+    ownVote: string;
+    adminNoBooking: string;
+    completedNeedsPaid: string;
   };
   pay: {
     paid: string;

@@ -40,20 +40,29 @@ export function ForgotPassword() {
     resolver: zodResolver(schema),
   });
   const [sent, setSent] = useState(false);
+  const [mailDisabled, setMailDisabled] = useState(false);
 
   return (
     <ResetShell title={t('auth.resetTitle')}>
       <p className="mt-2 text-sm leading-relaxed text-slate-500">{t('auth.resetHint')}</p>
       {sent ? (
-        <p role="status" className="mt-6 rounded-xl bg-emerald-50 p-4 text-sm font-medium text-emerald-700">
-          {t('auth.resetSent')}
-        </p>
+        <div className="mt-6 space-y-3">
+          <p role="status" className="rounded-xl bg-emerald-50 p-4 text-sm font-medium text-emerald-700">
+            {t('auth.resetSent')}
+          </p>
+          {mailDisabled && (
+            <p role="note" className="rounded-xl bg-amber-50 p-4 text-sm font-medium text-amber-700">
+              {t('auth.mailDisabled')}
+            </p>
+          )}
+        </div>
       ) : (
         <form
           className="mt-6 space-y-4"
           onSubmit={handleSubmit(async (v) => {
             try {
-              await api.post('/auth/forgot-password', { email: v.email });
+              const { data } = await api.post('/auth/forgot-password', { email: v.email });
+              setMailDisabled(data?.mailDisabled === true);
               setSent(true);
             } catch (err) {
               toast.error(apiErrorMessage(err, t('tours.loadError')));
@@ -78,7 +87,7 @@ export function ForgotPassword() {
 export function ResetPassword() {
   const { t } = useTranslation();
   useDocumentMeta(t('auth.resetTitle'));
-  const { login } = useAuth();
+  const { refresh } = useAuth();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const token = params.get('token') ?? '';
@@ -120,9 +129,10 @@ export function ResetPassword() {
           try {
             const { data } = await api.post('/auth/reset-password', { token, password: v.password });
             localStorage.setItem('tourbooking_token', data.token);
+            // The reset endpoint already returns a fresh session token — just
+            // rehydrate context from it instead of a redundant login POST.
             try {
-              // Reuse login to populate context with the fresh credentials.
-              await login(data.user.email, v.password);
+              await refresh();
             } catch {
               localStorage.removeItem('tourbooking_token');
               navigate('/login', { replace: true });

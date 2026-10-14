@@ -76,6 +76,19 @@ model User {
   avatar       String?
   phone        String?
   status       UserStatus @default(ACTIVE)
+  // Token version for revocation: bumped on password change / disable.
+  // JWT carries tv; live-checks reject stale tokens even within TTL.
+  tokenVersion Int        @default(0)
+  // Loyalty + referral (points: 1điểm = 1.000₫ khi redeem).
+  loyaltyPoints Int     @default(0)
+  referralCode  String?
+  referredById  String?
+  // Email verification (anti-enumeration: register always 201, verify via mail).
+  // Existing rows are backfilled to true; new signups start false when SMTP
+  // is configured, true when mail is disabled (dev convenience).
+  emailVerified Boolean @default(false)
+  emailVerifyToken   String?
+  emailVerifyExpires DateTime?
   passwordResetToken   String?   @unique
   passwordResetExpires DateTime?
   createdAt    DateTime   @default(now())
@@ -85,6 +98,11 @@ model User {
   reviews   Review[]
   favorites Favorite[]
   reviewVotes ReviewVote[]
+  loyaltyTx LoyaltyTransaction[]
+  adminActions AdminAction[]
+  questions TourQuestion[]
+  messages  BookingMessage[]
+  pushSubs  PushSubscription[]
 }
 
 model Tour {
@@ -104,6 +122,8 @@ model Tour {
   // Child ticket: null = no child pricing (everyone pays adult price).
   childPrice     Int?
   childMaxAge    Int?
+  // Giờ khởi hành (0-23, giờ VN) để sort/filter nâng cao. Null = chưa set.
+  departureHour  Int?
   // Per-tour add-ons snapshot schema: [{id, name, price, perPerson}].
   addons         Json           @default("[]")
   // Free cancellation window in hours before travelDate. Null = flexible
@@ -113,6 +133,11 @@ model Tour {
   minGuests      Int          @default(1)
   maxGuests      Int          @default(20)
   availableSeats Int          @default(30)
+  // Tiered group pricing: [{minGuests, price, childPrice?}] — best match wins.
+  priceTiers     Json           @default("[]")
+  // Private tour option: flat surcharge added on top of fare.
+  privateAvailable Boolean      @default(false)
+  privateSurcharge Int          @default(0)
   rating         Float        @default(0)
   reviewCount    Int          @default(0)
   featured       Boolean      @default(false)
@@ -124,6 +149,7 @@ model Tour {
   reviews   Review[]
   favorites Favorite[]
   dates     TourDate[]
+  questions TourQuestion[]
 
   @@index([destination])
   @@index([departureLocation])
@@ -140,13 +166,19 @@ model TourDate {
   date      DateTime @db.Date
   capacity  Int
   booked    Int      @default(0)
+  guideId   String?
+  vehicleId String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   tour Tour @relation(fields: [tourId], references: [id], onDelete: Cascade)
+  guide Guide? @relation(fields: [guideId], references: [id], onDelete: SetNull)
+  vehicle Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
 
   @@unique([tourId, date])
   @@index([tourId])
+  @@index([guideId])
+  @@index([vehicleId])
 }
 
 model Coupon {
@@ -159,10 +191,39 @@ model Coupon {
   usageLimit Int?
   usedCount  Int        @default(0)
   active     Boolean    @default(true)
+  // Scoping for flash-sale / tour-specific promos (empty = all tours).
+  applicableTourIds Json @default("[]")
+  applicableCategory TourCategory?
+  startsAt   DateTime?
+  // Cap for PERCENT (e.g. 50% tối đa 200k) + family combo (min guests).
+  maxDiscount Int?
+  minGuests   Int        @default(0)
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
 
   bookings Booking[]
+}
+
+enum LoyaltyType {
+  EARN
+  REDEEM
+  REFUND
+  REFERRAL_REWARD
+  REFERRAL_BONUS
+}
+
+model LoyaltyTransaction {
+  id        String      @id @default(cuid())
+  userId    String
+  points    Int
+  type      LoyaltyType
+  bookingId String?
+  createdAt DateTime    @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([bookingId])
 }
 
 model Booking {
@@ -186,7 +247,35 @@ model Booking {
   subtotal      Int
   discount      Int           @default(0)
   total         Int
+  // Loyalty redeem snapshot.
+  loyaltyUsed     Int @default(0)
+  loyaltyDiscount Int @default(0)
+  // Price snapshot at booking time: breakdown must not use current tour.price.
+  adultUnitPrice Int?
+  childUnitPrice Int?
   bookingStatus BookingStatus @default(PENDING)
+  // Private tour booking (surcharge snapshot in addonsTotal? no — own field).
+  isPrivate       Boolean @default(false)
+  privateSurcharge Int    @default(0)
+  // Combo booking (nullable; combo legs are separate bookings sharing groupId).
+  comboId  String?
+  comboGroup String?
+  combo Combo? @relation(fields: [comboId], references: [id], onDelete: SetNull)
+  // Display currency (amounts stored in VND) + optional VAT invoice info.
+  currency   String  @default("VND")
+  vatAmount  Int     @default(0)
+  vatName    String?
+  vatTaxCode String?
+  vatAddress String?
+  vatEmail   String?
+  // Signed offline ticket + staff check-in.
+  ticketSignature String?
+  checkedInAt     DateTime?
+  checkedInBy     String?
+  // Hold timer: BANK_TRANSFER/CARD giữ chỗ N phút chờ trả (null = CASH/không hết hạn).
+  holdExpiresAt DateTime?
+  // Phân biệt user-cancel vs auto-release để FE hiện đúng UI.
+  cancelReason  String?
   reminderSentAt    DateTime?
   reviewInviteSentAt DateTime?
   createdAt     DateTime      @default(now())
@@ -199,11 +288,14 @@ model Booking {
   guestsList BookingGuest[]
   payment    Payment?
   reviews    Review[]
+  messages   BookingMessage[]
+  checkins   CheckInLog[]
 
   @@index([userId])
   @@index([tourId])
   @@index([bookingStatus])
   @@index([travelDate])
+  @@index([comboGroup])
 }
 
 model BookingGuest {
@@ -231,10 +323,71 @@ model Payment {
   status          PaymentStatus @default(PENDING)
   transactionCode String?       @unique
   paidAt          DateTime?
+  // Gateway reconciliation: ref from provider webhook + verified flag.
+  gatewayRef      String?
+  webhookVerified Boolean       @default(false)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+}
+
+model WebhookEvent {
+  id          String   @id @default(cuid())
+  provider    String
+  bookingCode String
+  amount      Int?
+  gatewayRef  String?
+  result      String
+  raw         Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  @@index([bookingCode])
+  @@index([createdAt])
+}
+
+model AdminAction {
+  id         String   @id @default(cuid())
+  adminId    String
+  action     String
+  entityType String
+  entityId   String?
+  detail     Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  admin User @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+  @@index([action])
+  @@index([entityType])
+  @@index([createdAt])
+}
+
+model Guide {
+  id        String   @id @default(cuid())
+  name      String
+  phone     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dates TourDate[]
+
+  @@index([active])
+}
+
+model Vehicle {
+  id        String   @id @default(cuid())
+  plate     String   @unique
+  type      String   @default("Bus")
+  seats     Int
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  dates TourDate[]
+
+  @@index([active])
 }
 
 model Review {
@@ -245,6 +398,8 @@ model Review {
   rating    Int
   comment   String?  @db.Text
   images    String[] @default([])
+  videos    String[] @default([])
+  verifiedTrip Boolean @default(true)
   helpfulCount Int   @default(0)
   hidden    Boolean  @default(false)
   adminReply String? @db.Text
@@ -296,8 +451,110 @@ model ContactMessage {
   phone     String?
   message   String   @db.Text
   isRead    Boolean  @default(false)
+  adminReply String? @db.Text
+  adminRepliedAt DateTime?
   createdAt DateTime @default(now())
 
   @@index([isRead])
   @@index([createdAt])
+}
+
+// Combo: bundled tours sold together with a percent discount.
+model Combo {
+  id              String     @id @default(cuid())
+  slug            String     @unique
+  title           String
+  description     String     @db.Text
+  tourIds         Json       @default("[]")
+  discountPercent Int        @default(0)
+  images          String[]   @default([])
+  featured        Boolean    @default(false)
+  status          TourStatus @default(ACTIVE)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  bookings Booking[]
+}
+
+// Blog posts (SEO + inspiration, link to related tours).
+enum PostStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model Post {
+  id          String     @id @default(cuid())
+  slug        String     @unique
+  title       String
+  excerpt     String     @default("")
+  content     String     @db.Text
+  cover       String?
+  status      PostStatus @default(DRAFT)
+  tourIds     Json       @default("[]")
+  publishedAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([status])
+}
+
+// Tour Q&A (pre-purchase questions, admin answers).
+model TourQuestion {
+  id         String    @id @default(cuid())
+  tourId     String
+  userId     String
+  question   String    @db.Text
+  answer     String?   @db.Text
+  answeredAt DateTime?
+  hidden     Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+
+  tour Tour @relation(fields: [tourId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tourId])
+  @@index([userId])
+}
+
+// Per-booking support chat (customer <-> admin).
+model BookingMessage {
+  id         String   @id @default(cuid())
+  bookingId  String
+  senderId   String
+  senderRole String   @default("CUSTOMER")
+  body       String   @db.Text
+  createdAt  DateTime @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  sender  User    @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([senderId])
+}
+
+// Staff check-in log (QR scan at departure).
+model CheckInLog {
+  id        String   @id @default(cuid())
+  bookingId String
+  method    String   @default("QR")
+  by        String?
+  createdAt DateTime @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+}
+
+// Web-push subscriptions (PWA reminders).
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }

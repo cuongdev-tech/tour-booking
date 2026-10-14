@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -6,7 +6,9 @@ import { api, apiErrorMessage } from '../../services/api';
 import { useEnumLabels } from '../../i18n/enums';
 import { formatDateStr } from '../../i18n/format';
 import { formatCurrency, type Booking, type BookingStatus, type Pagination } from '../../types';
-import { Button, Modal, RowAction, Select, StatusBadge, TableCard, TableEmpty, Td, Th } from '../../components/ui/kit';
+import { Button, Modal, RowAction, Select, Skeleton, StatusBadge, TableCard, TableEmpty, Td, Th } from '../../components/ui/kit';
+import { RetryState } from '../../components/ui/kit';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { AdminPagination } from './Pagination';
 
 const STATUSES: BookingStatus[] = ['PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED'];
@@ -29,22 +31,65 @@ export function BookingsManage() {
   const labels = useEnumLabels();
   const [searchParams, setSearchParams] = useSearchParams();
   const [bookings, setBookings] = useState<Booking[]>([]);
-  const [status, setStatus] = useState('');
-  const [page, setPage] = useState(1);
+  // Filter + page live in the URL (shareable, survives refresh, back button works).
+  const [status, setStatus] = useState(searchParams.get('status') ?? '');
+  const [page, setPage] = useState(Math.max(1, Number(searchParams.get('page')) || 1));
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [detail, setDetail] = useState<Booking | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  // Money / seat-affecting transitions need an explicit confirm — a misclick on
+  // CANCELLED / COMPLETED / PAID / FAILED can't be undone cleanly.
+  const [pendingStatus, setPendingStatus] = useState<{ id: string; next: BookingStatus } | null>(null);
+  const [pendingPayment, setPendingPayment] = useState<{ bookingId: string; next: string } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const load = (p: number = page, s: string = status) => {
-    api
-      .get('/admin/bookings', { params: { ...(s ? { status: s } : {}), page: p, limit: 10 } })
-      .then((r) => {
-        setBookings(r.data.data);
-        setPagination(r.data.pagination);
-      })
-      .catch((err) => toast.error(apiErrorMessage(err, t('adminBookings.loadFailed'))));
+  const load = async (p: number = page, s: string = status) => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setLoading(true);
+    setLoadFailed(false);
+    try {
+      const r = await api.get('/admin/bookings', {
+        params: { ...(s ? { status: s } : {}), page: p, limit: 10 },
+        signal: ctrl.signal,
+      });
+      if (ctrl.signal.aborted) return;
+      setBookings(r.data.data);
+      setPagination(r.data.pagination);
+    } catch (err) {
+      if ((err as { code?: string })?.code === 'ERR_CANCELED') return;
+      setLoadFailed(true);
+      toast.error(apiErrorMessage(err, t('adminBookings.loadFailed')));
+    } finally {
+      if (!ctrl.signal.aborted) setLoading(false);
+    }
   };
-  useEffect(() => { void load(page, status); }, [page, status]);
+  useEffect(() => {
+    void load(page, status);
+    return () => abortRef.current?.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, status]);
+
+  // Mirror filter/page into the URL (replace, not push) — preserve nothing else
+  // except when consuming ?open= (handled below, which clears it).
+  useEffect(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams();
+        if (status) next.set('status', status);
+        if (page !== 1) next.set('page', String(page));
+        // Drop a consumed ?open= (openDetail clears it explicitly too).
+        const open = prev.get('open');
+        if (open) next.set('open', open);
+        return next;
+      },
+      { replace: true },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, page]);
 
   // Deep-link from the notification bell (?open=<bookingId>): jump straight
   // to the booking detail so the admin can verify and confirm at once.
@@ -52,7 +97,14 @@ export function BookingsManage() {
   useEffect(() => {
     const openId = searchParams.get('open');
     if (!openId) return;
-    setSearchParams({}, { replace: true });
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('open');
+        return next;
+      },
+      { replace: true },
+    );
     void openDetail(openId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
@@ -65,6 +117,16 @@ export function BookingsManage() {
     } catch (err) {
       toast.error(apiErrorMessage(err, t('adminBookings.updateFailed')));
     }
+  };
+
+  const requestStatusChange = (id: string, next: BookingStatus) => {
+    if (next === 'CANCELLED' || next === 'COMPLETED') setPendingStatus({ id, next });
+    else void update(id, next);
+  };
+
+  const requestPaymentChange = (bookingId: string, next: string) => {
+    if (next === 'PAID' || next === 'FAILED') setPendingPayment({ bookingId, next });
+    else void updatePayment(bookingId, next);
   };
 
   const openDetail = async (id: string) => {
@@ -85,7 +147,7 @@ export function BookingsManage() {
     s === 'PENDING'
       ? ['PENDING', 'PAID', 'FAILED']
       : s === 'AWAITING_CONFIRMATION'
-        ? ['AWAITING_CONFIRMATION', 'PAID', 'FAILED']
+        ? ['AWAITING_CONFIRMATION', 'PAID', 'FAILED', 'PENDING']
         : s === 'FAILED'
           ? ['FAILED', 'PENDING']
           : [s];
@@ -111,14 +173,19 @@ export function BookingsManage() {
         </Select>
       </div>
       <TableCard>
-        <table className="w-full min-w-200 text-left">
-          <thead className="bg-slate-50">
-            <tr><Th>{t('adminBookings.code')}</Th><Th>{t('adminBookings.tour')}</Th><Th>{t('adminBookings.total')}</Th><Th>{t('adminBookings.status')}</Th><Th right>{t('admin.actions')}</Th></tr>
-          </thead>
-          <tbody>
-            {bookings.length === 0 && (
-              <TableEmpty colSpan={5}>{t('tours.emptyTitle')}</TableEmpty>
-            )}
+        {loading && bookings.length === 0 ? (
+          <div className="space-y-2 p-4"><Skeleton className="h-12" /><Skeleton className="h-12" /><Skeleton className="h-12" /></div>
+        ) : loadFailed && bookings.length === 0 ? (
+          <RetryState title={t('adminBookings.loadFailed')} onRetry={() => load()} retryLabel={t('common.retry')} />
+        ) : (
+          <table className="w-full min-w-200 text-left">
+            <thead className="bg-slate-50">
+              <tr><Th>{t('adminBookings.code')}</Th><Th>{t('adminBookings.tour')}</Th><Th>{t('adminBookings.total')}</Th><Th>{t('adminBookings.status')}</Th><Th right>{t('admin.actions')}</Th></tr>
+            </thead>
+            <tbody>
+              {bookings.length === 0 && (
+                <TableEmpty colSpan={5}>{t('tours.emptyTitle')}</TableEmpty>
+              )}
             {bookings.map((b) => (
               <tr key={b.id} className="transition-colors hover:bg-slate-50/60">
                 <Td className="font-mono text-xs tabular-nums">{b.bookingCode}</Td>
@@ -132,7 +199,7 @@ export function BookingsManage() {
                       value={b.bookingStatus}
                       onChange={(e) => {
                         // Same-status selection is a no-op (avoids a pointless PATCH + toast).
-                        if (e.target.value !== b.bookingStatus) void update(b.id, e.target.value as BookingStatus);
+                        if (e.target.value !== b.bookingStatus) requestStatusChange(b.id, e.target.value as BookingStatus);
                       }}
                       aria-label={t('adminBookings.status')}
                       className="w-auto px-2 py-1.5 text-xs"
@@ -144,8 +211,9 @@ export function BookingsManage() {
                 </Td>
               </tr>
             ))}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        )}
       </TableCard>
       <AdminPagination pagination={pagination} onPage={setPage} />
       <Modal open={detail !== null || detailLoading} onClose={() => setDetail(null)} label={t('bookings.details')} wide>
@@ -212,7 +280,7 @@ export function BookingsManage() {
                     <Select
                       value={detail.payment.status}
                       onChange={(e) => {
-                        if (e.target.value !== detail.payment?.status) void updatePayment(detail.id, e.target.value);
+                        if (e.target.value !== detail.payment?.status) requestPaymentChange(detail.id, e.target.value);
                       }}
                       aria-label={t('adminBookings.status')}
                       className="w-auto px-2 py-1.5 text-xs"
@@ -241,7 +309,7 @@ export function BookingsManage() {
                   </p>
                   <Button
                     className="mt-2 w-full"
-                    onClick={() => void updatePayment(detail.id, 'PAID')}
+                    onClick={() => setPendingPayment({ bookingId: detail.id, next: 'PAID' })}
                   >
                     {t('pay.confirmReceived', { defaultValue: 'Xác nhận đã nhận tiền' }) as string}
                   </Button>
@@ -277,6 +345,30 @@ export function BookingsManage() {
           </div>
         ) : null}
       </Modal>
+      <ConfirmDialog
+        open={pendingStatus !== null}
+        title={labels.bookingStatus(pendingStatus?.next ?? 'CANCELLED')}
+        message={`${pendingStatus?.id ?? ''} → ${pendingStatus ? labels.bookingStatus(pendingStatus.next) : ''}`}
+        confirmLabel={t('common.confirm') as string}
+        cancelLabel={t('common.cancel') as string}
+        onClose={() => setPendingStatus(null)}
+        onConfirm={() => {
+          if (pendingStatus) void update(pendingStatus.id, pendingStatus.next).finally(() => setPendingStatus(null));
+          else setPendingStatus(null);
+        }}
+      />
+      <ConfirmDialog
+        open={pendingPayment !== null}
+        title={t('pay.confirmReceived', { defaultValue: 'Xác nhận đã nhận tiền' }) as string}
+        message={`${pendingPayment?.bookingId ?? ''} → ${pendingPayment ? labels.paymentStatus(pendingPayment.next) : ''}`}
+        confirmLabel={t('common.confirm') as string}
+        cancelLabel={t('common.cancel') as string}
+        onClose={() => setPendingPayment(null)}
+        onConfirm={() => {
+          if (pendingPayment) void updatePayment(pendingPayment.bookingId, pendingPayment.next).finally(() => setPendingPayment(null));
+          else setPendingPayment(null);
+        }}
+      />
     </div>
   );
 }

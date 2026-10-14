@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Heart, Menu, LayoutDashboard, LogOut, User as UserIcon, X } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { LanguageSwitcher } from './LanguageSwitcher';
+import { CurrencySwitcher } from './CurrencySwitcher';
 import { NotificationBell } from './NotificationBell';
 import { BrandLogo, PageContainer } from '../ui/kit';
 
@@ -19,6 +20,8 @@ export function Navbar() {
     { to: '/', label: t('nav.home'), end: true },
     { to: '/tours', label: t('nav.tours'), end: false },
     { to: '/destinations', label: t('nav.destinations'), end: true },
+    { to: '/combos', label: t('nav.combos', { defaultValue: 'Combos' }) as string, end: true },
+    { to: '/blog', label: t('nav.blog', { defaultValue: 'Blog' }) as string, end: false },
     { to: '/about', label: t('nav.about'), end: true },
     { to: '/bookings', label: t('nav.myBookings'), end: true },
   ];
@@ -83,18 +86,23 @@ export function Navbar() {
         </nav>
 
         <div className="hidden items-center gap-1 md:flex">
+          <CurrencySwitcher />
           <LanguageSwitcher />
           {user ? (
             <>
               <NotificationBell />
-              <Link
-                to="/favorites"
-                className="flex h-11 w-11 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-rose-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700 active:bg-slate-200"
-                title={t('nav.favorites')}
-                aria-label={t('nav.favorites')}
-              >
-                <Heart className="h-5 w-5" aria-hidden />
-              </Link>
+              {/* Favorites stay available to admins (wishlist isn't booking), but
+                  the nav hides it to keep the admin chrome booking-focused. */}
+              {user.role !== 'ADMIN' && (
+                <Link
+                  to="/favorites"
+                  className="flex h-11 w-11 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-rose-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700 active:bg-slate-200"
+                  title={t('nav.favorites')}
+                  aria-label={t('nav.favorites')}
+                >
+                  <Heart className="h-5 w-5" aria-hidden />
+                </Link>
+              )}
               {user.role === 'ADMIN' && (
                 <Link
                   to="/admin"
@@ -139,6 +147,7 @@ export function Navbar() {
         </div>
 
         <div className="flex items-center gap-1 md:hidden">
+          <CurrencySwitcher compact />
           <LanguageSwitcher compact />
           {user && <NotificationBell />}
           <button
@@ -173,15 +182,17 @@ export function Navbar() {
             ))}
             {user ? (
               <>
-                <NavLink
-                  to="/favorites"
-                  onClick={() => setOpen(false)}
-                  className={({ isActive }) =>
-                    `flex min-h-11 items-center rounded-xl px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700 ${isActive ? 'bg-orange-50 font-semibold text-orange-700' : 'text-slate-700 hover:bg-slate-100'}`
-                  }
-                >
-                  {t('nav.favorites')}
-                </NavLink>
+                {user.role !== 'ADMIN' && (
+                  <NavLink
+                    to="/favorites"
+                    onClick={() => setOpen(false)}
+                    className={({ isActive }) =>
+                      `flex min-h-11 items-center rounded-xl px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700 ${isActive ? 'bg-orange-50 font-semibold text-orange-700' : 'text-slate-700 hover:bg-slate-100'}`
+                    }
+                  >
+                    {t('nav.favorites')}
+                  </NavLink>
+                )}
                 <NavLink
                   to="/profile"
                   onClick={() => setOpen(false)}

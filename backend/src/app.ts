@@ -5,10 +5,18 @@ import { errorHandler, notFound } from './middleware/common.js';
 import { securityHeaders } from './middleware/security.js';
 import adminRoutes from './routes/admin.routes.js';
 import authRoutes from './routes/auth.routes.js';
+import { adminRouter as blogAdminRouter, default as blogRoutes } from './routes/blog.routes.js';
 import bookingRoutes from './routes/booking.routes.js';
+import { adminRouter as chatAdminRouter, default as chatRoutes } from './routes/chat.routes.js';
+import checkinRoutes from './routes/checkin.routes.js';
+import { adminRouter as comboAdminRouter, default as comboRoutes } from './routes/combo.routes.js';
 import contactRoutes from './routes/contact.routes.js';
 import couponRoutes from './routes/coupon.routes.js';
 import favoriteRoutes from './routes/favorite.routes.js';
+import loyaltyRoutes from './routes/loyalty.routes.js';
+import paymentRoutes from './routes/payment.routes.js';
+import pushRoutes from './routes/push.routes.js';
+import qaRoutes, { adminRouter as qaAdminRouter } from './routes/qa.routes.js';
 import reviewRoutes from './routes/review.routes.js';
 import tourRoutes from './routes/tour.routes.js';
 
@@ -40,7 +48,8 @@ export function createApp() {
   app.set('trust proxy', env.trustProxy);
   app.use(securityHeaders);
   app.use(cors({ origin: (origin, cb) => cb(null, isAllowedOrigin(origin)), credentials: true }));
-  app.use(express.json({ limit: '1mb' }));
+  // Review images can be base64 (3 x 700k) — 1mb would 413 before zod runs.
+  app.use(express.json({ limit: '5mb' }));
 
   app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'tour-booking-backend' }));
   app.use('/api/auth', authRoutes);
@@ -50,7 +59,20 @@ export function createApp() {
   app.use('/api/coupons', couponRoutes);
   app.use('/api/reviews', reviewRoutes);
   app.use('/api/favorites', favoriteRoutes);
+  app.use('/api/loyalty', loyaltyRoutes);
+  app.use('/api/payments', paymentRoutes);
+  app.use('/api/posts', blogRoutes);
+  app.use('/api', qaRoutes);
+  app.use('/api', chatRoutes);
+  app.use('/api/combos', comboRoutes);
+  app.use('/api/tickets', checkinRoutes);
+  app.use('/api/push', pushRoutes);
   app.use('/api/admin', adminRoutes);
+  // Admin sub-routers (already admin-guarded internally).
+  app.use('/api/admin/posts', blogAdminRouter);
+  app.use('/api/admin', qaAdminRouter);
+  app.use('/api/admin', chatAdminRouter);
+  app.use('/api/admin/combos', comboAdminRouter);
 
   app.use(notFound);
   app.use(errorHandler);

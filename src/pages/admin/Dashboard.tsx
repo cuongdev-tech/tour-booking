@@ -5,6 +5,7 @@ import { api } from '../../services/api';
 import { useEnumLabels } from '../../i18n/enums';
 import { formatCurrency } from '../../types';
 import { fmtShort, monthNumberFromKey } from '../../utils/revenue';
+import { currentIntlLocale } from '../../i18n/format';
 import { Button, Skeleton } from '../../components/ui/kit';
 
 interface CategorySlice {
@@ -117,7 +118,7 @@ function Bars({ trend, month }: { trend: TrendMonth[]; month: number }) {
   const { t } = useTranslation();
   const monthLabel = useMonthLabel();
   const shown = trend.filter((t) => t.total > 0);
-  const rows = shown.length > 0 ? shown : trend.slice(Math.max(0, month - 3), month);
+  const rows = shown.length > 0 ? shown : trend.slice(-3);
   const max = Math.max(1, ...rows.map((t) => t.total));
   // Y ticks: 0 .. max nice steps
   const steps = 5;
@@ -126,7 +127,7 @@ function Bars({ trend, month }: { trend: TrendMonth[]; month: number }) {
     <div className="flex gap-2 overflow-x-auto pb-1">
       <div className="sticky left-0 flex w-16 shrink-0 flex-col-reverse justify-between bg-white py-0 text-right text-[11px] font-normal tabular-nums text-neutral-500" aria-hidden>
         {ticks.map((tk) => (
-          <span key={tk}>{tk.toLocaleString('vi-VN')}</span>
+          <span key={tk}>{tk.toLocaleString(currentIntlLocale())}</span>
         ))}
       </div>
       <div className="relative min-w-120 flex-1">
@@ -182,6 +183,16 @@ export function AdminDashboard() {
     void load(month, year);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month, year]);
+
+  // Escape closes the export menu (the overlay button only handles clicks).
+  useEffect(() => {
+    if (!exportOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExportOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [exportOpen]);
 
   const months = useMemo(() => Array.from({ length: 12 }, (_, i) => i + 1), []);
   const years = useMemo(() => {
@@ -409,7 +420,7 @@ export function AdminDashboard() {
             {[
               {
                 label: t('adminRevenue.revenueMonth'),
-                value: `${formatCurrency(data.revenue).replace('₫', '').trim()} đ`,
+                value: formatCurrency(data.revenue),
                 hint: t('adminRevenue.revenueHint'),
               },
               {

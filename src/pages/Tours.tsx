@@ -40,6 +40,7 @@ export function Tours() {
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const SORTS = [
@@ -47,6 +48,7 @@ export function Tours() {
     { value: 'price_asc', label: t('tours.sortPriceAsc') },
     { value: 'price_desc', label: t('tours.sortPriceDesc') },
     { value: 'rating', label: t('tours.sortRating') },
+    { value: 'departure_earliest', label: t('tours.sortDeparture', { defaultValue: 'Giờ KH sớm nhất' }) as string },
   ];
 
   const categoryLabel = (c: string): string => (c ? labels.category(c) : t('tours.all'));
@@ -55,6 +57,10 @@ export function Tours() {
   const departure = params.get('departure') ?? '';
   const destination = params.get('destination') ?? '';
   const sort = params.get('sort') ?? 'newest';
+  // Advanced: travel date + party size filter (only tours with seats left).
+  const travelDate = params.get('date') ?? '';
+  const guestsParam = params.get('guests') ?? '';
+  const availableOnly = params.get('availableOnly') === 'true';
   // Guard the page number: ?page=abc must behave as page 1, never NaN.
   const rawPage = Number(params.get('page') ?? 1);
   const page = Number.isFinite(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1;
@@ -64,8 +70,11 @@ export function Tours() {
   const minRatingNum = Number(minRating);
   const minRatingValue = minRating !== '' && Number.isFinite(minRatingNum) && minRatingNum > 0 ? minRatingNum : undefined;
 
-  const query = useMemo(
-    () => ({
+  const query = useMemo(() => {
+    const gNum = Number(guestsParam);
+    const maxP = Number(maxPrice);
+    const dateOk = travelDate && !Number.isNaN(Date.parse(travelDate)) ? travelDate : undefined;
+    return {
       q: q || undefined,
       category: category || undefined,
       departure: departure || undefined,
@@ -74,9 +83,13 @@ export function Tours() {
       page,
       limit: 9,
       minRating: minRatingValue,
-      maxPrice: maxPrice ? Number(maxPrice) : undefined,
-    }),
-    [q, category, departure, destination, sort, page, minRating, minRatingValue, maxPrice],
+      maxPrice: maxPrice && Number.isFinite(maxP) ? maxP : undefined,
+      date: dateOk,
+      guests: guestsParam && Number.isFinite(gNum) && gNum > 0 ? Math.floor(gNum) : undefined,
+      availableOnly: availableOnly || undefined,
+    };
+  },
+    [q, category, departure, destination, sort, page, minRating, minRatingValue, maxPrice, travelDate, guestsParam, availableOnly],
   );
 
   useEffect(() => {
@@ -98,7 +111,8 @@ export function Tours() {
         if (!ctrl.signal.aborted) setLoading(false);
       });
     return () => ctrl.abort();
-  }, [query, t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, t, attempt]);
 
   // Functional updater: rapid consecutive filter changes can't clobber each other
   // on a stale `params` closure.
@@ -156,7 +170,7 @@ export function Tours() {
     setDestInput('');
   };
 
-  const hasFilter = Boolean(qInput || category || departure || destination || sort !== 'newest' || minRating || maxPrice);
+  const hasFilter = Boolean(qInput || category || departure || destination || sort !== 'newest' || minRating || maxPrice || travelDate || guestsParam || availableOnly);
 
   const filterLabel = 'mb-1.5 block text-sm font-medium text-slate-700';
 
@@ -240,6 +254,33 @@ export function Tours() {
         />
         {t('tours.rating45')}
       </label>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label htmlFor={`tour-date-${idPrefix}`} className={filterLabel}>{t('tourDetails.travelDate')}</label>
+          <Input id={`tour-date-${idPrefix}`} type="date" value={travelDate} onChange={(e) => set('date', e.target.value)} />
+        </div>
+        <div>
+          <label htmlFor={`tour-guests-${idPrefix}`} className={filterLabel}>{t('tourDetails.guests')}</label>
+          <Input
+            id={`tour-guests-${idPrefix}`}
+            type="number"
+            min={1}
+            max={20}
+            value={guestsParam}
+            onChange={(e) => set('guests', e.target.value)}
+            placeholder="2"
+          />
+        </div>
+      </div>
+      <label className="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm text-slate-700 transition-colors hover:border-orange-300 active:bg-slate-50 has-checked:border-orange-700 has-checked:bg-orange-50">
+        <input
+          type="checkbox"
+          checked={availableOnly}
+          onChange={(e) => set('availableOnly', e.target.checked ? 'true' : '')}
+          className="h-4 w-4 rounded border-slate-300 accent-orange-700"
+        />
+        {t('tours.availableOnly', { defaultValue: 'Chỉ hiện tour còn chỗ' }) as string}
+      </label>
     </div>
   );
 
@@ -296,7 +337,7 @@ export function Tours() {
               {[1, 2, 3, 4, 5, 6].map((i) => <Skeleton key={i} className="h-96" />)}
             </div>
           ) : error ? (
-            <RetryState title={t('tours.loadError')} hint={error} onRetry={() => window.location.reload()} retryLabel={t('tours.retry')} />
+            <RetryState title={t('tours.loadError')} hint={error} onRetry={() => setAttempt((a) => a + 1)} retryLabel={t('tours.retry')} />
           ) : tours.length === 0 ? (
             <EmptyState
               icon={<SearchX className="h-6 w-6" aria-hidden />}

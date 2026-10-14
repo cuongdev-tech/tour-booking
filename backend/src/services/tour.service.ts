@@ -12,9 +12,12 @@ export interface TourQuery {
   minRating?: number;
   featured?: boolean;
   status?: string;
-  sort?: 'price_asc' | 'price_desc' | 'rating' | 'newest';
+  sort?: 'price_asc' | 'price_desc' | 'rating' | 'newest' | 'departure_earliest';
   page?: number;
   limit?: number;
+  date?: string;
+  guests?: number;
+  availableOnly?: boolean;
 }
 
 function toFiniteNumber(value: unknown): number | undefined {
@@ -106,9 +109,14 @@ export async function listTours(query: TourQuery) {
   const where: Prisma.TourWhereInput = {};
 
   if (query.status) {
-    where.status = query.status as 'ACTIVE' | 'INACTIVE';
+    if (query.status === 'ACTIVE' || query.status === 'INACTIVE') where.status = query.status;
   }
-  if (query.category) where.category = query.category as 'Beach' | 'Mountains' | 'Culture' | 'Relaxation';
+  if (query.category) {
+    const cats = ['Beach', 'Mountains', 'Culture', 'Relaxation'] as const;
+    if ((cats as readonly string[]).includes(query.category)) {
+      where.category = query.category as (typeof cats)[number];
+    }
+  }
 
   // Text filters are accent-insensitive (see helper above): resolve matching ids
   // with SQL-side normalization, then intersect. Replaces Prisma `contains`,
@@ -148,21 +156,46 @@ export async function listTours(query: TourQuery) {
     };
   }
 
-  const orderBy: Prisma.TourOrderByWithRelationInput =
+  const orderBy: Prisma.TourOrderByWithRelationInput[] | Prisma.TourOrderByWithRelationInput =
     query.sort === 'price_asc'
       ? { price: 'asc' }
       : query.sort === 'price_desc'
         ? { price: 'desc' }
         : query.sort === 'rating'
           ? { rating: 'desc' }
-          : { createdAt: 'desc' };
+          : query.sort === 'departure_earliest'
+            ? [{ departureHour: 'asc' }, { createdAt: 'desc' }]
+            : { createdAt: 'desc' };
 
   const [total, tours] = await Promise.all([
     prisma.tour.count({ where }),
     prisma.tour.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit }),
   ]);
 
-  return { data: tours, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+  // Advanced filter: only tours with seats left for a given date + party size.
+  // Managed dates use their bucket, open dates use global availableSeats.
+  // NOTE: total counts pre-filter candidates (pagination may show fewer rows
+  // on filtered pages) — documented tradeoff to avoid N+1 count queries.
+  let data = tours;
+  const guests = toFiniteNumber(query.guests);
+  if (query.date && !Number.isNaN(Date.parse(query.date))) {
+    const day = toCalendarDay(new Date(query.date));
+    const need = guests && guests > 0 ? Math.floor(guests) : 1;
+    const rows = await prisma.tourDate.findMany({
+      where: { tourId: { in: tours.map((t) => t.id) }, date: day },
+    });
+    const byTour = new Map(rows.map((r) => [r.tourId, r]));
+    data = tours.filter((t) => {
+      const row = byTour.get(t.id);
+      const remaining = row ? row.capacity - row.booked : t.availableSeats;
+      if (query.availableOnly && remaining <= 0) return false;
+      return remaining >= need;
+    });
+  } else if (query.availableOnly) {
+    data = tours.filter((t) => t.availableSeats > 0);
+  }
+
+  return { data, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } };
 }
 
 export function getTourById(id: string) {
@@ -260,10 +293,11 @@ export function getDestinations() {
 }
 
 /**
- * Personal recommendations: tastes inferred from own bookings (weight 2) and
- * favorites (weight 1) by category + destination. Already-booked and
- * favorited tours are excluded (no repeats). Guests / empty history fall back
- * to top-rated featured tours.
+ * Personal recommendations: tastes inferred from bookings (2), completed
+ * trips (1.5 bonus), favorites (1) and reviews (0.5) by category + destination,
+ * with recency decay (recent activity counts more). Already-booked and
+ * favorited tours are excluded. Guests / empty history fall back to
+ * top-rated featured tours.
  */
 export async function getRecommendedTours(userId?: string, take = 8) {
   const limit = Math.min(12, Math.max(1, take));
@@ -274,26 +308,62 @@ export async function getRecommendedTours(userId?: string, take = 8) {
       take: limit,
     });
   }
-  const [bookings, favorites] = await Promise.all([
+  const [bookings, favorites, reviews] = await Promise.all([
     prisma.booking.findMany({
       where: { userId },
-      select: { tourId: true, tour: { select: { category: true, destination: true } } },
+      select: {
+        tourId: true,
+        bookingStatus: true,
+        createdAt: true,
+        tour: { select: { category: true, destination: true } },
+      },
     }),
     prisma.favorite.findMany({
       where: { userId },
       select: { tourId: true, tour: { select: { category: true, destination: true } } },
     }),
+    prisma.review.findMany({
+      where: { userId },
+      select: { tourId: true, rating: true },
+    }),
   ]);
   const catW = new Map<string, number>();
   const destW = new Map<string, number>();
   const bump = (m: Map<string, number>, k: string, w: number) => m.set(k, (m.get(k) ?? 0) + w);
+  const decay = (at: Date): number => {
+    const days = (Date.now() - at.getTime()) / 86400000;
+    if (days < 30) return 1;
+    if (days < 180) return 0.7;
+    return 0.4;
+  };
   for (const b of bookings) {
-    bump(catW, b.tour.category, 2);
-    bump(destW, stripVietnamese(b.tour.destination), 2);
+    const w = 2 * decay(b.createdAt) + (b.bookingStatus === 'COMPLETED' ? 1.5 : 0);
+    bump(catW, b.tour.category, w);
+    bump(destW, stripVietnamese(b.tour.destination), w);
   }
   for (const f of favorites) {
     bump(catW, f.tour.category, 1);
     bump(destW, stripVietnamese(f.tour.destination), 1);
+  }
+  const bumpReviewTours: Array<{ tourId: string; w: number }> = [];
+  for (const r of reviews) {
+    // High-rated own reviews reinforce the taste signal.
+    const w = r.rating >= 4 ? 0.5 : 0.2;
+    bumpReviewTours.push({ tourId: r.tourId, w });
+  }
+  if (bumpReviewTours.length > 0) {
+    const reviewTours = await prisma.tour.findMany({
+      where: { id: { in: [...new Set(bumpReviewTours.map((b) => b.tourId))] } },
+      select: { id: true, category: true, destination: true },
+    });
+    const byId = new Map(reviewTours.map((t) => [t.id, t]));
+    for (const b of bumpReviewTours) {
+      const t = byId.get(b.tourId);
+      if (t) {
+        bump(catW, t.category, b.w);
+        bump(destW, stripVietnamese(t.destination), b.w);
+      }
+    }
   }
   if (catW.size === 0 && destW.size === 0) {
     return prisma.tour.findMany({
@@ -310,8 +380,17 @@ export async function getRecommendedTours(userId?: string, take = 8) {
   });
   const scored = candidates.map((t) => ({
     tour: t,
-    score: (catW.get(t.category) ?? 0) * 2 + (destW.get(stripVietnamese(t.destination)) ?? 0) * 2 + t.rating,
+    score: (catW.get(t.category) ?? 0) * 2 + (destW.get(stripVietnamese(t.destination)) ?? 0) * 2 + t.rating * 0.5 + (t.featured ? 0.5 : 0),
   }));
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, limit).map((s) => s.tour);
+  // Diversity: avoid returning 8 tours of the same destination.
+  const seen = new Map<string, number>();
+  const diverse = scored.filter((s) => {
+    const k = stripVietnamese(s.tour.destination);
+    const n = seen.get(k) ?? 0;
+    if (n >= 3) return false;
+    seen.set(k, n + 1);
+    return true;
+  });
+  return (diverse.length >= limit ? diverse : scored).slice(0, limit).map((s) => s.tour);
 }

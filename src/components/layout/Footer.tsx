@@ -38,7 +38,9 @@ export function Footer() {
             {user?.role !== 'ADMIN' && (
               <li><Link to="/bookings" className={linkClass}>{t('footer.myBookings')}</Link></li>
             )}
-            <li><Link to="/favorites" className={linkClass}>{t('footer.favorites')}</Link></li>
+            {user?.role !== 'ADMIN' && (
+              <li><Link to="/favorites" className={linkClass}>{t('footer.favorites')}</Link></li>
+            )}
             <li><Link to="/profile" className={linkClass}>{t('footer.profile')}</Link></li>
           </ul>
         </nav>

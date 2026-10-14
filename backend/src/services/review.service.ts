@@ -21,18 +21,22 @@ export function getMyReviews(userId: string) {
 export async function updateReview(
   userId: string,
   reviewId: string,
-  data: { rating?: number; comment?: string; images?: string[] },
+  data: { rating?: number; comment?: string; images?: string[]; videos?: string[] },
 ) {
   const existing = await prisma.review.findUnique({ where: { id: reviewId } });
   if (!existing) throw new AppError(404, 'Review not found');
   if (existing.userId !== userId) throw new AppError(403, 'Not your booking');
+  if (existing.hidden) throw new AppError(400, 'Review is hidden');
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Review" WHERE "id" = ${reviewId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${existing.tourId} FOR UPDATE`;
     const updated = await tx.review.update({
       where: { id: reviewId },
       data: {
         ...(data.rating !== undefined ? { rating: data.rating } : {}),
         ...(data.comment !== undefined ? { comment: data.comment?.trim() || null } : {}),
         ...(data.images !== undefined ? { images: data.images } : {}),
+        ...(data.videos !== undefined ? { videos: data.videos } : {}),
       },
     });
     const agg = await tx.review.aggregate({
@@ -53,6 +57,7 @@ export async function deleteReview(userId: string, reviewId: string) {
   if (!existing) throw new AppError(404, 'Review not found');
   if (existing.userId !== userId) throw new AppError(403, 'Not your booking');
   await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${existing.tourId} FOR UPDATE`;
     await tx.review.delete({ where: { id: reviewId } });
     const agg = await tx.review.aggregate({
       where: { tourId: existing.tourId, hidden: false },
@@ -67,21 +72,26 @@ export async function deleteReview(userId: string, reviewId: string) {
   return { success: true };
 }
 
-export async function createReview(userId: string, bookingId: string, rating: number, comment?: string, images: string[] = []) {
+export async function createReview(userId: string, bookingId: string, rating: number, comment?: string, images: string[] = [], videos: string[] = []) {
   const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
   if (!booking) throw new AppError(404, 'Booking not found');
   if (booking.userId !== userId) throw new AppError(403, 'Not your booking');
   if (booking.bookingStatus !== 'COMPLETED')
     throw new AppError(400, 'Only completed bookings can be reviewed');
   // COMPLETED alone is not enough (an admin could complete a future tour):
-  // the travel day itself must have passed.
-  if (booking.travelDate.getTime() > Date.now())
-    throw new AppError(400, 'Only completed bookings can be reviewed');
-
-  const existing = await prisma.review.findUnique({ where: { bookingId } });
-  if (existing) throw new AppError(409, 'This booking has already been reviewed');
+  // the travel day itself must have passed (calendar-day UTC frame).
+  const travelDay = Date.UTC(booking.travelDate.getUTCFullYear(), booking.travelDate.getUTCMonth(), booking.travelDate.getUTCDate());
+  const n = new Date();
+  const todayUtc = Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate());
+  if (travelDay > todayUtc) throw new AppError(400, 'Only completed bookings can be reviewed');
 
   const review = await prisma.$transaction(async (tx) => {
+    // Lock booking row + re-check inside tx so concurrent double-submit
+    // can't both pass the pre-check and hit P2002.
+    await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} FOR UPDATE`;
+    const dup = await tx.review.findUnique({ where: { bookingId } });
+    if (dup) throw new AppError(409, 'This booking has already been reviewed');
+    await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${booking.tourId} FOR UPDATE`;
     const created = await tx.review.create({
       data: {
         userId,
@@ -90,6 +100,8 @@ export async function createReview(userId: string, bookingId: string, rating: nu
         rating,
         comment: comment?.trim() || null,
         images,
+        videos,
+        verifiedTrip: true,
       },
     });
     const agg = await tx.review.aggregate({
@@ -112,21 +124,20 @@ export async function toggleHelpful(userId: string, reviewId: string) {
   if (!review || review.hidden) throw new AppError(404, 'Review not found');
   if (review.userId === userId) throw new AppError(400, 'Cannot vote your own review');
   return prisma.$transaction(async (tx) => {
+    // Lock the review row so concurrent toggles can't lost-update helpfulCount.
+    await tx.$queryRaw`SELECT "id" FROM "Review" WHERE "id" = ${reviewId} FOR UPDATE`;
     const existing = await tx.reviewVote.findUnique({
       where: { userId_reviewId: { userId, reviewId } },
     });
     if (existing) {
       await tx.reviewVote.delete({ where: { id: existing.id } });
-      const updated = await tx.review.update({
-        where: { id: reviewId },
+      // Clamp at 0 atomically (a concurrent double-toggle can't drive it negative).
+      await tx.review.updateMany({
+        where: { id: reviewId, helpfulCount: { gt: 0 } },
         data: { helpfulCount: { decrement: 1 } },
       });
-      // Counter can never go negative (concurrent toggles clamp at 0).
-      if (updated.helpfulCount < 0) {
-        await tx.review.update({ where: { id: reviewId }, data: { helpfulCount: 0 } });
-        return { voted: false, helpfulCount: 0 };
-      }
-      return { voted: false, helpfulCount: updated.helpfulCount };
+      const row = await tx.review.findUnique({ where: { id: reviewId } });
+      return { voted: false, helpfulCount: row?.helpfulCount ?? 0 };
     }
     await tx.reviewVote.create({ data: { userId, reviewId } });
     const updated = await tx.review.update({
@@ -175,6 +186,7 @@ export async function adminSetReviewHidden(id: string, hidden: boolean) {
   if (!review) throw new AppError(404, 'Review not found');
   if (review.hidden === hidden) return review;
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${review.tourId} FOR UPDATE`;
     const updated = await tx.review.update({ where: { id }, data: { hidden } });
     // A hidden review must stop counting toward the tour's public rating.
     const agg = await tx.review.aggregate({
@@ -194,6 +206,7 @@ export async function adminDeleteReview(id: string) {
   const review = await prisma.review.findUnique({ where: { id } });
   if (!review) throw new AppError(404, 'Review not found');
   await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${review.tourId} FOR UPDATE`;
     await tx.review.delete({ where: { id } });
     // Recompute the tour aggregate so a removed review stops counting.
     const agg = await tx.review.aggregate({

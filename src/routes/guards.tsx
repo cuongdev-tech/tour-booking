@@ -40,7 +40,7 @@ export function RequireAdmin({ children }: { children: ReactNode }) {
  * everything but never book — send them to the management counterpart instead
  * of a dead customer page whose actions would 403 anyway.
  */
-export function RequireCustomer({ children, to = '/admin', quiet = false }: { children: ReactNode; to?: string; quiet?: boolean }) {
+export function RequireCustomer({ children, to = '/admin/bookings', quiet = false }: { children: ReactNode; to?: string; quiet?: boolean }) {
   const { user, loading } = useAuth();
   const { t } = useTranslation();
   const isAdmin = user?.role === 'ADMIN';

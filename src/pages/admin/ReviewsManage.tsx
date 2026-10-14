@@ -206,7 +206,10 @@ export function ReviewsManage() {
                 aria-label={t('adminReviews.replyPh') as string}
                 className="min-h-10 min-w-40 flex-1 rounded-lg border border-neutral-200 px-3.5 text-[13px] font-normal outline-none placeholder:text-neutral-400 focus:border-neutral-900"
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') void sendReply(r.id);
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void sendReply(r.id);
+                  }
                 }}
               />
               <button

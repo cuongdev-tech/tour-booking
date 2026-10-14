@@ -35,7 +35,9 @@ void i18n.use(initReactI18next).init({
   interpolation: { escapeValue: false },
 });
 
-document.documentElement.lang = i18n.language;
+if (typeof document !== 'undefined') {
+  document.documentElement.lang = i18n.language;
+}
 
 export function setLanguage(lng: Language): void {
   void i18n.changeLanguage(lng);
@@ -44,7 +46,11 @@ export function setLanguage(lng: Language): void {
   } catch {
     /* storage unavailable */
   }
-  document.documentElement.lang = lng;
+  try {
+    if (typeof document !== 'undefined') document.documentElement.lang = lng;
+  } catch {
+    /* non-DOM environment */
+  }
 }
 
 export function getLanguage(): Language {

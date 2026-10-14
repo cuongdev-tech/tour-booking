@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { Navbar } from './components/layout/Navbar';
+import { VerifyBanner } from './components/layout/VerifyBanner';
 import { Footer } from './components/layout/Footer';
 import { RequireAdmin, RequireAuth, RequireCustomer } from './routes/guards';
 import { Home } from './pages/Home';
@@ -13,10 +14,15 @@ import { BookingSuccess } from './pages/BookingSuccess';
 import { VerifyBooking } from './pages/VerifyBooking';
 import { Login, Register } from './pages/Auth';
 import { ForgotPassword, ResetPassword } from './pages/PasswordReset';
+import { VerifyEmail } from './pages/VerifyEmail';
 import { Profile } from './pages/Profile';
 import { Bookings } from './pages/Bookings';
 import { Favorites } from './pages/Favorites';
 import { About } from './pages/About';
+import { Blog } from './pages/Blog';
+import { BlogDetail } from './pages/BlogDetail';
+import { Combos } from './pages/Combos';
+import { ComboDetail } from './pages/ComboDetail';
 import { NotFound } from './pages/NotFound';
 import { AdminLayout } from './pages/AdminLayout';
 import { AdminDashboard } from './pages/admin/Dashboard';
@@ -25,8 +31,16 @@ import { ToursManage } from './pages/admin/ToursManage';
 import { BookingsManage } from './pages/admin/BookingsManage';
 import { UsersManage } from './pages/admin/UsersManage';
 import { CouponsManage } from './pages/admin/CouponsManage';
+import { PaymentsReconcile } from './pages/admin/PaymentsReconcile';
+import { AuditLog } from './pages/admin/AuditLog';
+import { FleetManage } from './pages/admin/FleetManage';
 import { ReviewsManage } from './pages/admin/ReviewsManage';
 import { ContactManage } from './pages/admin/ContactManage';
+import { PostsManage } from './pages/admin/PostsManage';
+import { CombosManage } from './pages/admin/CombosManage';
+import { ScanManage } from './pages/admin/ScanManage';
+import { ChatsManage } from './pages/admin/ChatsManage';
+import { QuestionsManage } from './pages/admin/QuestionsManage';
 
 function ScrollToTop() {
   const { pathname, hash } = useLocation();
@@ -51,17 +65,23 @@ export default function App() {
         <ScrollToTop />
         <div className="flex min-h-screen flex-col bg-slate-50 font-sans text-slate-900 antialiased">
           <Navbar />
+          <VerifyBanner />
           <main className="flex-grow">
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/tours" element={<Tours />} />
               <Route path="/destinations" element={<Destinations />} />
               <Route path="/tour/:id" element={<TourDetails />} />
+              <Route path="/blog" element={<Blog />} />
+              <Route path="/blog/:slug" element={<BlogDetail />} />
+              <Route path="/combos" element={<Combos />} />
+              <Route path="/combos/:slug" element={<ComboDetail />} />
               <Route path="/about" element={<About />} />
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<Register />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route path="/reset-password" element={<ResetPassword />} />
+              <Route path="/verify-email" element={<VerifyEmail />} />
               {/* legacy /auth redirects */}
               <Route path="/auth" element={<Login />} />
               <Route path="/checkout" element={<RequireAuth><RequireCustomer><Checkout /></RequireCustomer></RequireAuth>} />
@@ -70,16 +90,25 @@ export default function App() {
               <Route path="/verify/:code" element={<VerifyBooking />} />
               <Route path="/profile" element={<RequireAuth><Profile /></RequireAuth>} />
               <Route path="/bookings" element={<RequireAuth><RequireCustomer to="/admin/bookings" quiet><Bookings /></RequireCustomer></RequireAuth>} />
-              <Route path="/favorites" element={<RequireAuth><Favorites /></RequireAuth>} />
+              {/* Favorites are customer-only like bookings (admins use /admin/*). */}
+              <Route path="/favorites" element={<RequireAuth><RequireCustomer to="/admin/bookings" quiet><Favorites /></RequireCustomer></RequireAuth>} />
               <Route path="/admin" element={<RequireAdmin><AdminLayout /></RequireAdmin>}>
                 <Route index element={<AdminDashboard />} />
                 <Route path="doanh-thu-ngay" element={<DailyRevenue />} />
                 <Route path="tours" element={<ToursManage />} />
                 <Route path="bookings" element={<BookingsManage />} />
+                <Route path="doi-soat" element={<PaymentsReconcile />} />
+                <Route path="nhat-ky" element={<AuditLog />} />
+                <Route path="doi-xe" element={<FleetManage />} />
                 <Route path="users" element={<UsersManage />} />
                 <Route path="coupons" element={<CouponsManage />} />
                 <Route path="reviews" element={<ReviewsManage />} />
                 <Route path="contact" element={<ContactManage />} />
+                <Route path="posts" element={<PostsManage />} />
+                <Route path="combos" element={<CombosManage />} />
+                <Route path="scan" element={<ScanManage />} />
+                <Route path="chats" element={<ChatsManage />} />
+                <Route path="questions" element={<QuestionsManage />} />
               </Route>
               <Route path="*" element={<NotFound />} />
             </Routes>

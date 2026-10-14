@@ -32,10 +32,11 @@ export function About() {
 
   const sendContact = async (e: React.FormEvent) => {
     e.preventDefault();
+    const phoneDigits = (phone.match(/[0-9]/g) ?? []).length;
     if (
       name.trim().length < 2 ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-      (phone.trim() !== '' && !/^[0-9+\s-]{8,20}$/.test(phone.trim())) ||
+      (phone.trim() !== '' && (!/^[0-9+\s-]{8,20}$/.test(phone.trim()) || phoneDigits < 6)) ||
       message.trim().length < 10
     ) {
       toast.error(apiErrorMessage(null, t('contact.sendFailed')));
@@ -102,7 +103,7 @@ export function About() {
 
       {/* Contact form is customer-only: admins read and reply to messages at
           /admin/contact instead of sending them to themselves. */}
-      {user?.role !== 'ADMIN' && (
+      {user?.role !== 'ADMIN' ? (
       <div className="mt-12 md:mt-14">
         <SectionHeader center title={t('contact.title')} subtitle={t('contact.subtitle')} />
         <Card className="mx-auto mt-8 max-w-2xl p-6 sm:p-8">
@@ -137,6 +138,14 @@ export function About() {
             </form>
           )}
         </Card>
+      </div>
+      ) : (
+      <div className="mt-12 text-center md:mt-14">
+        <Link to="/admin/contact">
+          <Button variant="secondary" className="px-8 py-3">
+            {t('adminContact.title')} <ArrowRight className="h-4 w-4" aria-hidden />
+          </Button>
+        </Link>
       </div>
       )}
     </PageContainer>

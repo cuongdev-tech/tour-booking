@@ -16,3 +16,8 @@ export const remove = asyncHandler(async (req: Request, res: Response) => {
   await service.removeFavorite(req.user!.id, req.params.tourId);
   res.json({ success: true });
 });
+
+export const check = asyncHandler(async (req: Request, res: Response) => {
+  const favorite = await service.isFavorite(req.user!.id, req.params.tourId);
+  res.json({ favorite });
+});

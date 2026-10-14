@@ -56,6 +56,9 @@ export function NotificationBell() {
   const [customerItems, setCustomerItems] = useState<CustomerNotif[]>([]);
   const [seen, setSeen] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  // Mirror of `open` for use inside stable callbacks (updaters must stay pure —
+  // no setTimeout/side-effects inside setOpen).
+  const openRef = useRef(false);
 
   const isAdmin = user?.role === 'ADMIN';
 
@@ -117,17 +120,18 @@ export function NotificationBell() {
     };
   }, [user, isAdmin, fetchAdmin, fetchCustomer]);
 
-  // Close on route change / Escape / outside click.
+  // Close on route change / Escape / outside click (marking read on close).
   useEffect(() => {
-    setOpen(false);
+    close();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, location.search]);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') close();
     };
     const onClick = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false);
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) close();
     };
     document.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onClick);
@@ -135,7 +139,8 @@ export function NotificationBell() {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onClick);
     };
-  }, [open ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   if (!user) return null;
 
@@ -153,12 +158,27 @@ export function NotificationBell() {
     setSeen(now);
   };
 
-  const openAdminItem = (id: string) => {
+  // Mark read when the panel closes (not when it opens) — the badge must
+  // survive while the user is still reading the list.
+  const close = () => {
+    if (openRef.current) window.setTimeout(markSeen, 500);
+    openRef.current = false;
     setOpen(false);
+  };
+  const toggle = () => {
+    if (openRef.current) close();
+    else {
+      openRef.current = true;
+      setOpen(true);
+    }
+  };
+
+  const openAdminItem = (id: string) => {
+    close();
     navigate(`/admin/bookings?open=${id}`);
   };
   const openCustomerItem = (code: string) => {
-    setOpen(false);
+    close();
     navigate(`/booking-success/${code}`);
   };
 
@@ -168,10 +188,7 @@ export function NotificationBell() {
     <div className="relative" ref={panelRef}>
       <button
         type="button"
-        onClick={() => {
-          setOpen((o) => !o);
-          if (!open) markSeen();
-        }}
+        onClick={toggle}
         aria-label={title}
         aria-expanded={open}
         aria-haspopup="true"

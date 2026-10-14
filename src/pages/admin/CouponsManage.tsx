@@ -5,14 +5,16 @@ import { toast } from 'sonner';
 import { api, apiErrorMessage } from '../../services/api';
 import { formatMoney } from '../../i18n/format';
 import type { Coupon, Pagination } from '../../types';
-import { Button, Card, Field, Input, RowAction, Select, TableCard, TableEmpty, Td, Th } from '../../components/ui/kit';
+import { Button, Card, Field, Input, RetryState, RowAction, Select, Skeleton, TableCard, TableEmpty, Td, Th } from '../../components/ui/kit';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { AdminPagination } from './Pagination';
 
-const empty = { code: '', type: 'PERCENT', value: 10, minOrder: 1000000, expiresAt: '', usageLimit: 100, active: true };
+const empty = { code: '', type: 'PERCENT', value: 10, minOrder: 1000000, expiresAt: '', usageLimit: 100, active: true, applicableTourIds: '', applicableCategory: '', startsAt: '', maxDiscount: NaN as number, minGuests: 0 };
 
-/** Local YYYY-MM-DD for <input type="date"> (UTC slice shifts the day in +07). */
+/** Local YYYY-MM-DD for <input type="date"> (prefer the date part verbatim — new Date() shifts the day in +07). */
 function toLocalDateInput(iso: string): string {
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(iso);
+  if (m) return m[1];
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -26,16 +28,25 @@ export function CouponsManage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<Pagination | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const { register, handleSubmit, reset } = useForm({ defaultValues: empty });
 
-  const load = (p: number = page) =>
+  const load = (p: number = page) => {
+    setLoading(true);
+    setLoadFailed(false);
     api
       .get('/admin/coupons', { params: { page: p, limit: 10 } })
       .then((r) => {
         setCoupons(r.data.data);
         setPagination(r.data.pagination);
       })
-      .catch((err) => toast.error(apiErrorMessage(err, t('adminCoupons.loadFailed'))));
+      .catch((err) => {
+        setLoadFailed(true);
+        toast.error(apiErrorMessage(err, t('adminCoupons.loadFailed')));
+      })
+      .finally(() => setLoading(false));
+  };
   useEffect(() => { void load(page); }, [page]);
 
   const openCreate = () => {
@@ -56,6 +67,11 @@ export function CouponsManage() {
       // NaN renders as an empty input and submits back as unlimited (null).
       usageLimit: c.usageLimit ?? NaN,
       active: c.active,
+      applicableTourIds: (c.applicableTourIds ?? []).join(', '),
+      applicableCategory: c.applicableCategory ?? '',
+      startsAt: c.startsAt ? toLocalDateInput(c.startsAt) : '',
+      maxDiscount: c.maxDiscount ?? NaN,
+      minGuests: c.minGuests ?? 0,
     });
   };
 
@@ -75,6 +91,8 @@ export function CouponsManage() {
         throw new Error('Invalid numbers');
       }
       const usageLimit = Number(v.usageLimit);
+      const maxDisc = Number((v as { maxDiscount?: unknown }).maxDiscount);
+      const minG = Number((v as { minGuests?: unknown }).minGuests);
       const payload = {
         ...(editing ? {} : { code: v.code }),
         type: v.type,
@@ -83,6 +101,14 @@ export function CouponsManage() {
         expiresAt: v.expiresAt,
         usageLimit: Number.isNaN(usageLimit) ? null : usageLimit,
         active: v.active,
+        applicableTourIds: String((v as { applicableTourIds?: unknown }).applicableTourIds ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        applicableCategory: ((v as { applicableCategory?: string }).applicableCategory || null) as string | null,
+        startsAt: ((v as { startsAt?: string }).startsAt || null) as string | null,
+        maxDiscount: Number.isFinite(maxDisc) && maxDisc > 0 ? maxDisc : null,
+        minGuests: Number.isFinite(minG) && minG > 0 ? Math.floor(minG) : 0,
       };
       if (editing) {
         await api.patch(`/admin/coupons/${editing.id}`, payload);
@@ -143,6 +169,19 @@ export function CouponsManage() {
             <Field label={t('adminCoupons.minOrder')}><Input type="number" {...register('minOrder', { valueAsNumber: true })} /></Field>
             <Field label={t('adminCoupons.expiresAt')}><Input type="date" {...register('expiresAt', { required: true })} /></Field>
             <Field label={t('adminCoupons.usageLimit')} hint={t('adminCoupons.unlimited')}><Input type="number" {...register('usageLimit', { valueAsNumber: true })} /></Field>
+            <Field label="Ngày bắt đầu (flash sale)"><Input type="date" {...register('startsAt')} /></Field>
+            <Field label="Trần giảm (PERCENT)"><Input type="number" {...register('maxDiscount', { valueAsNumber: true })} /></Field>
+            <Field label="Tối thiểu khách (combo)"><Input type="number" min={0} {...register('minGuests', { valueAsNumber: true })} /></Field>
+            <Field label="Áp dụng tour (IDs, phẩy)"><Input {...register('applicableTourIds')} placeholder="để trống = all" /></Field>
+            <Field label="Áp dụng hạng mục">
+              <Select {...register('applicableCategory')}>
+                <option value="">Tất cả</option>
+                <option value="Beach">Beach</option>
+                <option value="Mountains">Mountains</option>
+                <option value="Culture">Culture</option>
+                <option value="Relaxation">Relaxation</option>
+              </Select>
+            </Field>
             <div className="flex items-end gap-2 md:col-span-3">
               <Button type="submit">{editing ? t('adminCoupons.update') : t('adminCoupons.create')}</Button>
               <Button type="button" variant="secondary" onClick={closeForm}>{t('adminCoupons.cancel')}</Button>
@@ -151,7 +190,12 @@ export function CouponsManage() {
         </Card>
       )}
       <TableCard>
-        <table className="w-full min-w-220 text-left">
+        {loading && coupons.length === 0 ? (
+          <div className="space-y-2 p-4"><Skeleton className="h-12" /><Skeleton className="h-12" /><Skeleton className="h-12" /></div>
+        ) : loadFailed && coupons.length === 0 ? (
+          <RetryState title={t('adminCoupons.loadFailed')} onRetry={() => load()} retryLabel={t('common.retry')} />
+        ) : (
+          <table className="w-full min-w-220 text-left">
           <thead className="bg-slate-50">
             <tr><Th>{t('adminCoupons.code')}</Th><Th>{t('adminCoupons.value')}</Th><Th>{t('adminCoupons.minOrder')}</Th><Th>{t('adminCoupons.expiresAt')}</Th><Th>{t('adminCoupons.used')}</Th><Th>{t('adminCoupons.active')}</Th><Th right>{t('admin.actions')}</Th></tr>
           </thead>
@@ -181,7 +225,8 @@ export function CouponsManage() {
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        )}
       </TableCard>
       <ConfirmDialog open={deleteId !== null} title={t('adminCoupons.deleteTitle')} message={t('adminCoupons.deleteMessage')} confirmLabel={t('adminCoupons.deleteConfirm')} cancelLabel={t('adminCoupons.cancel')} onClose={() => setDeleteId(null)} onConfirm={() => deleteId && void remove(deleteId)} />
       <AdminPagination pagination={pagination} onPage={setPage} />

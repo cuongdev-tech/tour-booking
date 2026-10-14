@@ -16,7 +16,9 @@ export const env = {
   // client-sent X-Forwarded-For would let attackers spoof req.ip.
   trustProxy: Number(process.env.TRUST_PROXY ?? 0),
   jwtSecret: rawJwtSecret ?? 'dev-secret-change-me',
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
+  // Short-lived access token (was 7d — too long without revocation).
+  // tokenVersion live-checks still allow instant revoke on password/role change.
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '1d',
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   // Extra allowed origins (comma-separated) for production deployments.
   extraOrigins: (process.env.FRONTEND_URLS ?? '')
@@ -28,6 +30,22 @@ export const env = {
   bankName: process.env.BANK_NAME?.trim() || 'MB',
   bankAccountNumber: process.env.BANK_ACCOUNT_NUMBER?.trim() || '0123456789',
   bankAccountName: process.env.BANK_ACCOUNT_NAME?.trim() || 'TOUR BOOKING DEMO',
+  // Redis URL for shared rate-limiting across replicas. Absent => in-memory
+  // single-instance limiter (fine for dev / single container).
+  redisUrl: process.env.REDIS_URL?.trim() || '',
+  // Hold timer: minutes a BANK_TRANSFER/CARD booking keeps seats while PENDING.
+  holdMinutes: Number(process.env.HOLD_MINUTES ?? 15) > 0 ? Number(process.env.HOLD_MINUTES ?? 15) : 15,
+  // HMAC secret for payment webhooks (SePay/VNPay-style). Absent => webhooks
+  // accept amount+code match only (dev); set in production.
+  paymentWebhookSecret: process.env.PAYMENT_WEBHOOK_SECRET?.trim() || '',
+  // HMAC secret for offline ticket signatures (QR ?t=). Dev fallback only.
+  ticketSecret: process.env.TICKET_SECRET?.trim() || 'dev-ticket-secret',
+  // VAT rate for optional company invoices (e.g. 0.1 = 10%).
+  vatRate: Number(process.env.VAT_RATE ?? 0.1),
+  // Web-push (VAPID). Absent => subscriptions stored, sending skipped.
+  vapidPublicKey: process.env.VAPID_PUBLIC_KEY?.trim() || '',
+  vapidPrivateKey: process.env.VAPID_PRIVATE_KEY?.trim() || '',
+  vapidSubject: process.env.VAPID_SUBJECT?.trim() || 'mailto:no-reply@example.com',
 };
 
 export const prisma = new PrismaClient();

@@ -5,7 +5,10 @@ import { validateBody } from '../middleware/common.js';
 import { asyncHandler } from '../utils/helpers.js';
 import {
   patchCouponSchema,
+  patchGuideSchema,
   patchTourSchema,
+  patchVehicleSchema,
+  guideSchema,
   replyReviewSchema,
   setReadSchema,
   tourDateSchema,
@@ -15,7 +18,9 @@ import {
   updateUserSchema,
   upsertCouponSchema,
   upsertTourSchema,
+  vehicleSchema,
 } from '../validators/schemas.js';
+import * as fleet from '../controllers/fleet.controller.js';
 
 const router = Router();
 router.use(requireAuth, asyncHandler(requireAdmin));
@@ -30,6 +35,7 @@ router.delete('/tours/:id', c.deleteTour);
 
 router.get('/bookings', c.listBookings);
 router.get('/payments/awaiting', c.awaitingPayments);
+router.get('/payments/events', c.paymentEvents);
 router.get('/bookings/:id', c.getBooking);
 router.patch('/bookings/:id', validateBody(updateBookingStatusSchema), c.updateBookingStatus);
 router.patch('/bookings/:id/payment', validateBody(updatePaymentStatusSchema), c.updatePaymentStatus);
@@ -43,6 +49,8 @@ router.delete('/reviews/:id', c.deleteReview);
 
 router.get('/contact', c.listContact);
 router.patch('/contact/:id', validateBody(setReadSchema), c.setContactRead);
+router.patch('/contact/:id/reply', validateBody(replyReviewSchema), c.replyContact);
+router.delete('/contact/:id/reply', c.deleteContactReply);
 router.delete('/contact/:id', c.deleteContact);
 
 router.get('/tours/:id/dates', c.listTourDates);
@@ -56,5 +64,17 @@ router.get('/coupons', c.listCoupons);
 router.post('/coupons', validateBody(upsertCouponSchema), c.createCoupon);
 router.patch('/coupons/:id', validateBody(patchCouponSchema), c.updateCoupon);
 router.delete('/coupons/:id', c.deleteCoupon);
+
+router.get('/audit-log', fleet.auditLog);
+
+router.get('/guides', fleet.listGuides);
+router.post('/guides', validateBody(guideSchema), fleet.createGuide);
+router.patch('/guides/:id', validateBody(patchGuideSchema), fleet.updateGuide);
+router.delete('/guides/:id', fleet.deleteGuide);
+
+router.get('/vehicles', fleet.listVehicles);
+router.post('/vehicles', validateBody(vehicleSchema), fleet.createVehicle);
+router.patch('/vehicles/:id', validateBody(patchVehicleSchema), fleet.updateVehicle);
+router.delete('/vehicles/:id', fleet.deleteVehicle);
 
 export default router;

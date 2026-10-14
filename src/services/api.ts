@@ -14,8 +14,10 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    // Any 401 means the token is rejected (expired/invalid/missing scope) —
-    // drop it regardless of the message wording so a dead token can't linger.
+    // A 401 means the token is rejected (expired/invalid) — drop it so a dead
+    // token can't linger. 403 is scope-based (valid token, wrong role) and
+    // must NOT log out: a customer hitting an admin route would be kicked
+    // out on a perfectly live session.
     // AuthContext listens for 'auth:expired' to clear user state too, otherwise
     // the UI keeps showing a logged-in user whose every request fails.
     // Skip the cleanup when the failing request carried no token (public pages

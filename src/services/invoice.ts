@@ -20,13 +20,16 @@ export async function downloadInvoice(
   // (PAID hoặc CASH); thẻ/chuyển khoản chưa trả thì chưa có vé.
   // Lỗi thì bỏ qua, hóa đơn vẫn đầy đủ.
   let qrData = '';
+  let verifyUrl = `${window.location.origin}/verify/${booking.bookingCode}`;
+  const sig = (booking as unknown as { ticketSignature?: string | null }).ticketSignature;
+  if (sig) verifyUrl = `${verifyUrl}?t=${encodeURIComponent(sig)}`;
   const ticketUsable =
     booking.bookingStatus !== 'CANCELLED' &&
     (booking.payment?.status === 'PAID' || booking.payment?.method === 'CASH');
   if (ticketUsable) {
     try {
       const { default: QRCode } = await import('qrcode');
-      qrData = await QRCode.toDataURL(`${window.location.origin}/verify/${booking.bookingCode}`, {
+      qrData = await QRCode.toDataURL(verifyUrl, {
         width: 200,
         margin: 1,
       });
@@ -84,6 +87,20 @@ export async function downloadInvoice(
   if (booking.discount > 0) {
     rows.push([`${t('checkout.discount')}${booking.coupon ? ` (${booking.coupon.code})` : ''}`, `-${formatCurrency(booking.discount)}`]);
   }
+  if ((booking.loyaltyDiscount ?? 0) > 0) {
+    rows.push([`Loyalty${booking.loyaltyUsed ? ` (${booking.loyaltyUsed} điểm)` : ''}`, `-${formatCurrency(booking.loyaltyDiscount ?? 0)}`]);
+  }
+  if (booking.isPrivate && (booking.privateSurcharge ?? 0) > 0) {
+    rows.push(['Private tour', `+${formatCurrency(booking.privateSurcharge ?? 0)}`]);
+  }
+  if (booking.comboId) {
+    rows.push(['Combo', booking.comboGroup ? `Nhóm ${booking.comboGroup}` : booking.comboId]);
+  }
+  if ((booking.vatAmount ?? 0) > 0) {
+    // VAT-inclusive pricing: informational only, already part of the total.
+    const vatLabel = booking.vatName ? `VAT đã gồm${booking.vatTaxCode ? ` · MST ${booking.vatTaxCode}` : ''}` : 'VAT đã gồm trong tổng';
+    rows.push([vatLabel, `${formatCurrency(booking.vatAmount ?? 0)}`]);
+  }
   for (const [label, value] of rows) {
     const lines = doc.splitTextToSize(value, 120);
     doc.text(label, 14, y);
@@ -114,7 +131,7 @@ export async function downloadInvoice(
     doc.setFont('BeVN', 'normal');
     doc.setFontSize(9);
     doc.setTextColor(71, 85, 105);
-    doc.text(`${window.location.origin}/verify/${booking.bookingCode}`, 52, y + 8, { maxWidth: 140 });
+    doc.text(verifyUrl, 52, y + 8, { maxWidth: 140 });
     doc.text(t('verify.title', { defaultValue: 'Xác thực vé' }), 52, y + 15);
   }
 

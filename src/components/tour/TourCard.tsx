@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowRight, Clock, Heart, MapPin, Users } from 'lucide-react';
@@ -14,6 +14,25 @@ export function FavoriteButton({ tourId, initial = false, onChange }: { tourId: 
   const { user } = useAuth();
   const [fav, setFav] = useState(initial);
   const [busy, setBusy] = useState(false);
+
+  // Keep in sync when the parent list changes (refetch/remount with a new initial).
+  useEffect(() => {
+    setFav(initial);
+  }, [initial]);
+
+  // Lists outside Favorites pass favInitial=false by default — resolve the real
+  // state once per tour so the heart isn't falsely empty for liked tours.
+  useEffect(() => {
+    if (!user || initial) return;
+    const ctrl = new AbortController();
+    api
+      .get(`/favorites/${tourId}/check`, { signal: ctrl.signal })
+      .then((r) => {
+        if (!ctrl.signal.aborted) setFav(r.data.favorite === true);
+      })
+      .catch(() => undefined);
+    return () => ctrl.abort();
+  }, [user, tourId, initial]);
 
   const toggle = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -107,10 +126,12 @@ function stripDeparturePrefix(title: string, departure: string): string {
 export function TourCard({ tour, favInitial = false, onToggleFavorite }: { tour: Tour; favInitial?: boolean; onToggleFavorite?: (tourId: string, fav: boolean) => void }) {
   const { t } = useTranslation();
   const labels = useEnumLabels();
-  const soldOut = tour.availableSeats <= 0;
+  const soldOut = (tour.availableSeats ?? 0) <= 0;
   const badge = marketingBadge(tour);
   const badgeLabel = badge === 'bestSeller' ? t('tourCard.bestSeller') : badge === 'popular' ? t('tourCard.popular') : badge === 'isNew' ? t('tourCard.isNew') : null;
   const shortTitle = stripDeparturePrefix(tour.title, tour.departureLocation);
+  const cover = tour.images?.[0] ?? '';
+  const ratingText = (tour.rating ?? 0).toFixed(1);
 
   return (
     <Link
@@ -119,7 +140,7 @@ export function TourCard({ tour, favInitial = false, onToggleFavorite }: { tour:
     >
       <div className="relative h-56 shrink-0 overflow-hidden bg-slate-100">
         <SafeImage
-          src={tour.images[0]}
+          src={cover}
           alt={tour.title}
           className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
         />
@@ -170,9 +191,9 @@ export function TourCard({ tour, favInitial = false, onToggleFavorite }: { tour:
           </span>
         </p>
         <div className="mt-2.5 flex items-center gap-2">
-          <Stars value={tour.rating} />
+          <Stars value={tour.rating ?? 0} />
           <span className="text-[13px] font-medium tabular-nums text-slate-600">
-            {tour.rating.toFixed(1)} <span className="font-normal text-slate-400">({tour.reviewCount})</span>
+            {ratingText} <span className="font-normal text-slate-400">({tour.reviewCount})</span>
           </span>
         </div>
 

@@ -12,6 +12,33 @@ import { useEnumLabels } from '../i18n/enums';
 import { Button, Card, EmptyState, Modal, PageContainer, SafeImage, Skeleton, StatusBadge } from '../components/ui/kit';
 import { useDocumentMeta } from '../hooks/useDocumentMeta';
 
+function HoldCountdown({ expiresAt, onExpire }: { expiresAt: string; onExpire?: () => void }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const ms = new Date(expiresAt).getTime() - now;
+  const fired = useRef(false);
+  useEffect(() => {
+    if (ms <= 0 && !fired.current) {
+      fired.current = true;
+      onExpire?.();
+    }
+  }, [ms, onExpire]);
+  if (Number.isNaN(ms)) return null;
+  if (ms <= 0) return <p role="status" className="mt-4 text-xs font-semibold text-red-600">Hết giờ giữ chỗ…</p>;
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  const text = h > 0 ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return (
+    <p role="timer" className="mt-4 rounded-xl bg-sky-50 p-3 text-xs font-semibold tabular-nums text-sky-800">
+      Giữ chỗ còn {text} — thanh toán trước khi hết giờ
+    </p>
+  );
+}
+
 export function BookingSuccess() {
   const { t } = useTranslation();
   const labels = useEnumLabels();
@@ -21,6 +48,7 @@ export function BookingSuccess() {
   // arriving straight from a fresh checkout.
   const fresh = (location.state as { fresh?: boolean } | null)?.fresh === true;
   const [booking, setBooking] = useState<Booking | null>(null);
+  const [cancelPolicy, setCancelPolicy] = useState<{ freeCancel: boolean; deadline: string | null; freeCancelHours: number | null; refundable: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   const [attempt, setAttempt] = useState(0);
   const [downloading, setDownloading] = useState(false);
@@ -39,7 +67,10 @@ export function BookingSuccess() {
     setLoading(true);
     api
       .get(`/bookings/code/${code}`, { signal: ctrl.signal })
-      .then((res) => setBooking(res.data.booking))
+      .then((res) => {
+        setBooking(res.data.booking);
+        setCancelPolicy(res.data.cancelPolicy ?? null);
+      })
       .catch((err) => {
         if (axios.isAxiosError(err) && err.code === 'ERR_CANCELED') return;
         setBooking(null);
@@ -62,6 +93,7 @@ export function BookingSuccess() {
 
   // QR vé điện tử trỏ tới trang verify công khai (quét không cần đăng nhập).
   // Chỉ tạo khi vé đã dùng được (PAID hoặc CASH) —Lazy-load để không phình bundle.
+  // Dùng ticketSignature (?t=) khi có để chống vé giả.
   useEffect(() => {
     const usable =
       booking &&
@@ -71,7 +103,10 @@ export function BookingSuccess() {
       setQr('');
       return;
     }
-    const url = `${window.location.origin}/verify/${booking.bookingCode}`;
+    const sig = (booking as Booking & { ticketSignature?: string | null }).ticketSignature;
+    const url = sig
+      ? `${window.location.origin}/verify/${booking.bookingCode}?t=${encodeURIComponent(sig)}`
+      : `${window.location.origin}/verify/${booking.bookingCode}`;
     let alive = true;
     import('qrcode')
       .then((m) => m.default.toDataURL(url, { width: 220, margin: 1 }))
@@ -89,26 +124,38 @@ export function BookingSuccess() {
   // Poll chờ admin xác nhận đã nhận tiền: PENDING/AWAITING/FAILED -> PAID thì
   // báo thành công và hiện QR vé (không cần F5). FAILED vẫn poll để admin
   // reset về PENDING rồi duyệt cũng tự hiện.
+  // Deps chỉ theo booking id (tránh reset interval mỗi lần setBooking) — trạng
+  // thái mới đọc qua ref bên trong tick.
+  const bookingRef = useRef(booking);
+  bookingRef.current = booking;
   useEffect(() => {
-    const pay = booking?.payment;
+    const cur = bookingRef.current;
+    const pay = cur?.payment;
     const waiting =
-      booking &&
+      cur &&
       pay &&
       (pay.status === 'PENDING' || pay.status === 'AWAITING_CONFIRMATION' || pay.status === 'FAILED') &&
       pay.method !== 'CASH' &&
-      booking.bookingStatus !== 'CANCELLED';
-    if (!waiting || !booking) return;
+      cur.bookingStatus !== 'CANCELLED';
+    if (!waiting || !cur) return;
     if (prevPayStatus.current === null) prevPayStatus.current = pay?.status ?? 'PENDING';
+    const code = cur.bookingCode;
     const id = window.setInterval(() => {
       api
-        .get(`/bookings/code/${booking.bookingCode}`)
+        .get(`/bookings/code/${code}`)
         .then((res) => {
           const next = res.data.booking as Booking;
+          if (res.data.cancelPolicy) setCancelPolicy(res.data.cancelPolicy);
           const before = prevPayStatus.current;
           const after = next.payment?.status ?? 'PENDING';
           prevPayStatus.current = after;
+          // Terminal states stop the poll (id unchanged so the effect won't rerun).
+          if (after === 'PAID' || next.bookingStatus === 'CANCELLED' || next.bookingStatus === 'COMPLETED') {
+            window.clearInterval(id);
+          }
+          const prev = bookingRef.current;
           // Chỉ set state khi có gì đổi (tránh regen QR vé mỗi 10s).
-          if (after !== before || next.bookingStatus !== booking.bookingStatus || next.total !== booking.total) {
+          if (!prev || after !== before || next.bookingStatus !== prev.bookingStatus || next.total !== prev.total) {
             setBooking(next);
           }
           if (after === 'PAID' && before !== 'PAID') {
@@ -121,7 +168,8 @@ export function BookingSuccess() {
         .catch(() => undefined);
     }, 10000);
     return () => window.clearInterval(id);
-  }, [booking?.id, booking?.payment?.status, booking?.bookingCode, booking?.payment?.method, booking?.bookingStatus, t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [booking?.id]);
 
   if (loading) return <PageContainer className="max-w-3xl py-10"><Skeleton className="h-96" /></PageContainer>;
   if (!booking) {
@@ -144,7 +192,11 @@ export function BookingSuccess() {
   const childCount = booking.children ?? 0;
   const adultCount = booking.adults ?? booking.guests - childCount;
   const bookingAddons = Array.isArray(booking.addons) ? booking.addons : [];
-  const adultFare = adultCount * (booking.tour?.price ?? 0);
+  // Snapshots first — current tour.price may have changed since booking.
+  const adultUnit = booking.adultUnitPrice ?? booking.tour?.price ?? 0;
+  const childUnit = booking.childUnitPrice ?? (childCount > 0 ? booking.tour?.childPrice ?? null : null);
+  const adultFare = adultCount * adultUnit;
+  const childFare = childUnit != null ? childCount * childUnit : Math.max(0, booking.subtotal - adultFare);
   const rows: Array<[string, React.ReactNode]> = [
     [t('bookingSuccess.tour'), <span key="tour" className="max-w-60 truncate text-right font-medium text-slate-900" title={booking.tour?.title}>{booking.tour?.title}</span>],
     [t('bookingSuccess.travelDate'), <span key="date" className="tabular-nums text-slate-900">{formatDateStr(booking.travelDate)}</span>],
@@ -152,7 +204,7 @@ export function BookingSuccess() {
     ...(childCount > 0 && booking.tour
       ? ([
           [`${t('tourDetails.adults', { defaultValue: 'Người lớn' })} × ${adultCount}`, <span key="ad" className="tabular-nums text-slate-900">{formatCurrency(adultFare)}</span>],
-          [`${t('tourDetails.children', { defaultValue: 'Trẻ em' })} × ${childCount}`, <span key="ch" className="tabular-nums text-slate-900">{formatCurrency(Math.max(0, booking.subtotal - adultFare))}</span>],
+          [`${t('tourDetails.children', { defaultValue: 'Trẻ em' })} × ${childCount}`, <span key="ch" className="tabular-nums text-slate-900">{formatCurrency(childFare)}</span>],
         ] as Array<[string, React.ReactNode]>)
       : []),
     ...bookingAddons.map(
@@ -162,6 +214,32 @@ export function BookingSuccess() {
           React.ReactNode,
         ],
     ),
+    [t('checkout.subtotal'), <span key="subtotal" className="tabular-nums text-slate-900">{formatCurrency(booking.subtotal)}</span>],
+    ...(booking.discount > 0
+      ? ([
+          [`${t('checkout.discount')}${booking.coupon ? ` (${booking.coupon.code})` : ''}`, <span key="discount" className="tabular-nums text-emerald-600">-{formatCurrency(booking.discount)}</span>],
+        ] as Array<[string, React.ReactNode]>)
+      : []),
+    ...((booking.loyaltyDiscount ?? 0) > 0
+      ? ([
+          [`Loyalty${booking.loyaltyUsed ? ` (${booking.loyaltyUsed} điểm)` : ''}`, <span key="loyalty" className="tabular-nums text-emerald-600">-{formatCurrency(booking.loyaltyDiscount ?? 0)}</span>],
+        ] as Array<[string, React.ReactNode]>)
+      : []),
+    ...((booking.isPrivate ?? false) && (booking.privateSurcharge ?? 0) > 0
+      ? ([
+          ['Đi riêng đoàn', <span key="private" className="tabular-nums text-slate-900">+{formatCurrency(booking.privateSurcharge ?? 0)}</span>],
+        ] as Array<[string, React.ReactNode]>)
+      : []),
+    ...(booking.comboId
+      ? ([
+          [`Combo (${booking.comboGroup ?? booking.comboId})`, <span key="combo" className="rounded-full bg-orange-100 px-2 py-0.5 text-[11px] font-bold text-orange-700">Đã giảm theo combo</span>],
+        ] as Array<[string, React.ReactNode]>)
+      : []),
+    ...((booking.vatAmount ?? 0) > 0
+      ? ([
+          [`VAT (đã gồm trong tổng${booking.vatTaxCode ? ` · MST ${booking.vatTaxCode}` : ''})`, <span key="vat" className="tabular-nums text-slate-500">{formatCurrency(booking.vatAmount ?? 0)}</span>],
+        ] as Array<[string, React.ReactNode]>)
+      : []),
     [t('bookingSuccess.total'), <span key="total" className="font-bold tabular-nums text-orange-700">{formatCurrency(booking.total)}</span>],
     [t('bookingSuccess.booking'), <StatusBadge key="bs" status={booking.bookingStatus} />],
     [t('bookingSuccess.payment'), <StatusBadge key="ps" status={booking.payment?.status ?? 'PENDING'} />],
@@ -172,6 +250,20 @@ export function BookingSuccess() {
   const ticketUsable =
     booking.bookingStatus !== 'CANCELLED' &&
     (booking.payment?.status === 'PAID' || booking.payment?.method === 'CASH');
+  const bookingSig = (booking as Booking & { ticketSignature?: string | null }).ticketSignature;
+  const checkedInAt = (booking as Booking & { checkedInAt?: string | null }).checkedInAt ?? null;
+  const verifyLink = bookingSig
+    ? `/verify/${booking.bookingCode}?t=${encodeURIComponent(bookingSig)}`
+    : `/verify/${booking.bookingCode}`;
+  const cancelPolicyLine = cancelPolicy
+    ? cancelPolicy.freeCancel
+      ? cancelPolicy.deadline
+        ? (t('tourDetails.freeCancelUntil', { defaultValue: 'Hủy miễn phí đến {{date}}', date: formatDateStr(cancelPolicy.deadline) }) as string)
+        : (t('tourDetails.freeCancelFlexible', { defaultValue: 'Hủy miễn phí linh hoạt' }) as string)
+      : cancelPolicy.deadline
+        ? (t('bookings.freeCancelEndedAt', { defaultValue: 'Hết hạn hủy miễn phí (hạn {{date}})', date: formatDateStr(cancelPolicy.deadline) }) as string)
+        : (t('bookings.freeCancelEnded', { defaultValue: 'Đã hết hạn hủy miễn phí' }) as string)
+    : null;
 
   // FAILED vẫn cho mở lại QR để thử lại (admin reset FAILED->PENDING rồi duyệt
   // cũng tự hiện nhờ poll).
@@ -215,7 +307,7 @@ export function BookingSuccess() {
               <div className="mt-4 flex flex-col items-center gap-1.5 md:items-start">
                 <img src={qr} alt="QR" className="h-36 w-36 rounded-2xl border border-slate-200 bg-white p-2" />
                 <Link
-                  to={`/verify/${booking.bookingCode}`}
+                  to={verifyLink}
                   className="inline-flex items-center gap-1 rounded text-xs font-semibold text-orange-700 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700"
                 >
                   <QrCode className="h-3.5 w-3.5" aria-hidden />
@@ -228,10 +320,21 @@ export function BookingSuccess() {
                 {t('verify.generating', { defaultValue: 'Đang tạo mã QR vé...' }) as string}
               </p>
             )}
-            {!ticketUsable && (
+            {!ticketUsable && booking.bookingStatus !== 'CANCELLED' && (
               <p className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-relaxed text-amber-700">
                 {t('verify.needPayment', { defaultValue: 'Hoàn tất thanh toán để nhận mã QR vé điện tử.' }) as string}
               </p>
+            )}
+            {booking.bookingStatus === 'CANCELLED' && booking.cancelReason === 'EXPIRED' && (
+              <div className="mt-4 rounded-xl bg-red-50 p-4 text-left">
+                <p className="text-sm font-bold text-red-700">Hết thời gian giữ chỗ — đơn đã tự hủy và nhả ghế.</p>
+                <Link to={booking.tourId ? `/tour/${booking.tourId}` : '/tours'}>
+                  <Button className="mt-3 w-full">Đặt lại</Button>
+                </Link>
+              </div>
+            )}
+            {booking.holdExpiresAt && booking.bookingStatus !== 'CANCELLED' && (booking.payment?.status === 'PENDING' || booking.payment?.status === 'FAILED') && booking.payment?.method !== 'CASH' && (
+              <HoldCountdown expiresAt={booking.holdExpiresAt} onExpire={() => setAttempt((a) => a + 1)} />
             )}
             {/* Thanh toán: bấm để hiện QR, quét xong chờ admin xác nhận */}
             {canPay && (
@@ -246,13 +349,17 @@ export function BookingSuccess() {
                 <Button className="mt-3 w-full" onClick={openPay}>
                   {t('pay.payNow', { defaultValue: 'Thanh toán' }) as string} · {formatCurrency(booking.total)}
                 </Button>
-                {(booking.payment?.status === 'AWAITING_CONFIRMATION' ||
-                  (claimed && booking.payment?.status === 'PENDING')) && (
+                {claimed && booking.payment?.status === 'PENDING' && (
                   <p role="status" className="mt-2 text-xs leading-relaxed text-amber-700">
                     {t('pay.waiting', { defaultValue: 'Đã ghi nhận, đang chờ shop xác nhận đã nhận tiền...' }) as string}
                   </p>
                 )}
               </div>
+            )}
+            {booking.payment?.status === 'AWAITING_CONFIRMATION' && booking.bookingStatus !== 'CANCELLED' && (
+              <p role="status" className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-relaxed text-amber-700">
+                {t('pay.waiting', { defaultValue: 'Đã ghi nhận, đang chờ shop xác nhận đã nhận tiền...' }) as string}
+              </p>
             )}
             <div className="mt-6 flex flex-col gap-2">
               <Link to="/bookings"><Button className="w-full">{t('bookingSuccess.myBookings')}</Button></Link>
@@ -263,11 +370,11 @@ export function BookingSuccess() {
                 onClick={() => {
                   if (!booking) return;
                   setDownloading(true);
-                  downloadInvoice(booking, {
-                    bookingStatus: labels.bookingStatus(booking.bookingStatus),
-                    paymentStatus: labels.paymentStatus(booking.payment?.status ?? 'PENDING'),
-                  })
-                    .catch((err) => toast.error(apiErrorMessage(err, t('tours.loadError'))))
+                    downloadInvoice(booking, {
+                      bookingStatus: labels.bookingStatus(booking.bookingStatus),
+                      paymentStatus: labels.paymentStatus(booking.payment?.status ?? 'PENDING'),
+                    })
+                      .catch((err) => toast.error(apiErrorMessage(err, t('bookings.invoiceFailed'))))
                     .finally(() => setDownloading(false));
                 }}
               >
@@ -293,6 +400,16 @@ export function BookingSuccess() {
                 </div>
               ))}
             </dl>
+            {cancelPolicyLine && (
+              <p className="mt-3 rounded-xl bg-emerald-50 p-3 text-xs leading-relaxed text-emerald-700">
+                {cancelPolicyLine}
+              </p>
+            )}
+            {checkedInAt && (
+              <p className="mt-3 rounded-xl bg-sky-50 p-3 text-xs font-semibold leading-relaxed text-sky-800">
+                {t('verify.checkedInBadge', { defaultValue: 'Vé đã điểm danh' }) as string} · {formatDateStr(checkedInAt)}
+              </p>
+            )}
           </div>
         </div>
       </Card>

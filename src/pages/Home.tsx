@@ -34,10 +34,13 @@ export function Home() {
   const [recommended, setRecommended] = useState<Tour[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
   const { recent: recentTours } = useRecentlyViewed();
 
   useEffect(() => {
     const ctrl = new AbortController();
+    setLoading(true);
+    setError('');
     api
       .get('/tours', { params: { featured: true, limit: 6 }, signal: ctrl.signal })
       .then((res) => setFeatured(res.data.data))
@@ -54,7 +57,8 @@ export function Home() {
       .then((res) => setRecommended(res.data.data ?? []))
       .catch(() => undefined);
     return () => ctrl.abort();
-  }, [t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [t, attempt]);
 
   const search = (e: React.FormEvent) => {
     e.preventDefault();
@@ -192,7 +196,7 @@ export function Home() {
             </div>
           ) : error ? (
             <div className="mt-8">
-              <RetryState title={t('tours.loadError')} hint={error} onRetry={() => window.location.reload()} retryLabel={t('tours.retry')} />
+              <RetryState title={t('tours.loadError')} hint={error} onRetry={() => setAttempt((a) => a + 1)} retryLabel={t('tours.retry')} />
             </div>
           ) : featured.length === 0 ? (
             <div className="mt-8">

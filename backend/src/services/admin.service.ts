@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../config/env.js';
 import { parseDurationDays, type ItineraryDay } from '../validators/schemas.js';
 import { AppError, toSafeUser } from '../utils/helpers.js';
-import { monthBounds, parseDay, vnDayStartUTC, vnMonthKey } from '../utils/revenue-time.js';
+import { monthBounds, parseDay, vnDayStartUTC } from '../utils/revenue-time.js';
 import { matchTextIds, toCalendarDay } from './tour.service.js';
 
 function slugify(title: string): string {
@@ -78,6 +78,9 @@ export async function adminCreateTour(data: {
   childMaxAge?: number | null;
   addons?: import('../validators/schemas.js').TourAddon[];
   freeCancelHours?: number | null;
+  priceTiers?: Array<{ minGuests: number; price: number; childPrice?: number }>;
+  privateAvailable?: boolean;
+  privateSurcharge?: number;
   minGuests: number;
   maxGuests: number;
   availableSeats: number;
@@ -88,22 +91,72 @@ export async function adminCreateTour(data: {
 }) {
   assertItineraryMatchesDuration(data.itinerary, data.duration);
   assertTourPricing(data.price, data.childPrice ?? null, data.childMaxAge ?? null);
-  const base = data.slug?.trim() || slugify(data.title);
-  let slug = base;
-  let n = 1;
-  while (await prisma.tour.findUnique({ where: { slug } })) {
-    n += 1;
-    slug = `${base}-${n}`;
+  assertPriceTiers(data.priceTiers);
+  if (data.privateSurcharge != null && data.privateSurcharge < 0) {
+    throw new AppError(400, 'Private surcharge must be a non-negative integer');
   }
+  const base = data.slug?.trim() || slugify(data.title);
   const { addons, ...rest } = data;
-  return prisma.tour.create({
-    data: {
-      ...rest,
-      slug,
-      itinerary: data.itinerary as unknown as Prisma.InputJsonValue,
-      ...(addons !== undefined ? { addons: addons as unknown as Prisma.InputJsonValue } : {}),
-    },
-  });
+  // Slug race: two admins with the same title could pass the findUnique check
+  // together — retry with suffix on P2002 instead of leaking a raw 409.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const suffix = attempt === 0 ? '' : `-${attempt + 1}`;
+    // Re-check base occupancy each attempt (first attempt keeps exact base).
+    let slug = `${base}${suffix}`;
+    if (attempt > 0) {
+      let n = attempt + 1;
+      while (await prisma.tour.findUnique({ where: { slug } })) {
+        n += 1;
+        slug = `${base}-${n}`;
+      }
+    } else {
+      let n = 1;
+      let s = base;
+      while (await prisma.tour.findUnique({ where: { slug: s } })) {
+        n += 1;
+        s = `${base}-${n}`;
+      }
+      slug = s;
+    }
+    try {
+      return await prisma.tour.create({
+        data: {
+          ...rest,
+          slug,
+          itinerary: data.itinerary as unknown as Prisma.InputJsonValue,
+          ...(addons !== undefined ? { addons: addons as unknown as Prisma.InputJsonValue } : {}),
+        },
+      });
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002' &&
+        Array.isArray(err.meta?.target) &&
+        (err.meta.target as string[]).includes('slug') &&
+        attempt < 2
+      ) {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new AppError(409, 'Resource already exists');
+}
+
+/** Tier sanity: ascending unique minGuests, tier childPrice below tier price. */
+function assertPriceTiers(tiers: Array<{ minGuests: number; price: number; childPrice?: number }> | undefined): void {
+  if (!tiers || tiers.length === 0) return;
+  const seen = new Set<number>();
+  let prev = 0;
+  for (const t of tiers) {
+    if (seen.has(t.minGuests)) throw new AppError(400, 'Price tiers must have unique guest thresholds');
+    seen.add(t.minGuests);
+    if (t.minGuests <= prev) throw new AppError(400, 'Price tiers must be ascending by guests');
+    prev = t.minGuests;
+    if (t.childPrice != null && t.childPrice >= t.price) {
+      throw new AppError(400, 'Tier childPrice must be lower than tier price');
+    }
+  }
 }
 
 /** childPrice must stay below the effective adult price; age needs a price. */
@@ -130,10 +183,21 @@ export async function adminUpdateTour(
     data.maxGuests !== undefined ||
     data.price !== undefined ||
     data.childPrice !== undefined ||
-    data.childMaxAge !== undefined
+    data.childMaxAge !== undefined ||
+    data.slug !== undefined ||
+    data.availableSeats !== undefined ||
+    data.status !== undefined ||
+    data.priceTiers !== undefined ||
+    data.privateAvailable !== undefined ||
+    data.privateSurcharge !== undefined
   ) {
     const current = await prisma.tour.findUnique({ where: { id } });
     if (!current) throw new AppError(404, 'Tour not found');
+    if (data.privateSurcharge !== undefined) {
+      if (!Number.isInteger(data.privateSurcharge) || data.privateSurcharge < 0) {
+        throw new AppError(400, 'Private surcharge must be a non-negative integer');
+      }
+    }
     assertItineraryMatchesDuration(
       data.itinerary ?? (current.itinerary as unknown),
       data.duration ?? current.duration,
@@ -148,14 +212,63 @@ export async function adminUpdateTour(
       data.childPrice !== undefined ? data.childPrice : current.childPrice,
       data.childMaxAge !== undefined ? data.childMaxAge : current.childMaxAge,
     );
+    // Slug must stay unique (create path auto-suffixes; patch must not 409 raw).
+    if (data.slug !== undefined) {
+      const slug = data.slug.trim();
+      if (!slug) throw new AppError(400, 'Slug must not be empty');
+      const clash = await prisma.tour.findUnique({ where: { slug } });
+      if (clash && clash.id !== id) throw new AppError(409, 'Resource already exists');
+      data = { ...data, slug };
+    }
+    // availableSeats is remaining inventory — never negative.
+    const effectiveSeats = data.availableSeats ?? current.availableSeats;
+    if (!Number.isInteger(effectiveSeats) || effectiveSeats < 0) {
+      throw new AppError(400, 'Available seats must be a non-negative integer');
+    }
+    // Guard against breaking live bookings: upcoming PENDING/CONFIRMED orders.
+    const needsBookingCheck =
+      data.maxGuests !== undefined || data.minGuests !== undefined || data.status !== undefined;
+    if (needsBookingCheck) {
+      const now = new Date();
+      const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      const upcoming = await prisma.booking.findMany({
+        where: {
+          tourId: id,
+          bookingStatus: { in: ['PENDING', 'CONFIRMED'] },
+          travelDate: { gte: todayUtc },
+        },
+        select: { guests: true },
+      });
+      if (upcoming.length > 0) {
+        const maxBooked = Math.max(...upcoming.map((b) => b.guests));
+        const minBooked = Math.min(...upcoming.map((b) => b.guests));
+        if (effectiveMax < maxBooked) {
+          throw new AppError(
+            400,
+            `Tour allows at most ${effectiveMax} guest(s) but ${upcoming.length} upcoming booking(s) have up to ${maxBooked} guest(s)`,
+          );
+        }
+        if (effectiveMin > minBooked) {
+          throw new AppError(
+            400,
+            `Tour requires at least ${effectiveMin} guest(s) but ${upcoming.length} upcoming booking(s) have as few as ${minBooked} guest(s)`,
+          );
+        }
+        if (data.status === 'INACTIVE') {
+          throw new AppError(400, 'Cannot hide a tour with upcoming bookings — cancel them first');
+        }
+      }
+    }
   }
-  const { itinerary, addons, ...rest } = data;
+  const { itinerary, addons, priceTiers, ...rest } = data;
+  if (priceTiers !== undefined) assertPriceTiers(priceTiers);
   return prisma.tour.update({
     where: { id },
     data: {
       ...rest,
       ...(itinerary !== undefined ? { itinerary: itinerary as unknown as Prisma.InputJsonValue } : {}),
       ...(addons !== undefined ? { addons: addons as unknown as Prisma.InputJsonValue } : {}),
+      ...(priceTiers !== undefined ? { priceTiers: priceTiers as unknown as Prisma.InputJsonValue } : {}),
     },
   });
 }
@@ -171,6 +284,10 @@ export async function adminDeleteTour(id: string) {
 
 export function adminListBookings(status?: string, page?: unknown, limit?: unknown) {
   const { page: p, limit: l } = pageParams(page, limit);
+  const valid: Array<'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'COMPLETED'> = ['PENDING', 'CONFIRMED', 'CANCELLED', 'COMPLETED'];
+  if (status && !(valid as string[]).includes(status)) {
+    throw new AppError(400, `Invalid status. Valid values: ${valid.join(', ')}`);
+  }
   const where = status ? { bookingStatus: status as 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'COMPLETED' } : {};
   return listPaged(
     (args) =>
@@ -218,36 +335,46 @@ export function adminGetBooking(id: string) {
 type PaymentStatus = 'PENDING' | 'AWAITING_CONFIRMATION' | 'PAID' | 'FAILED' | 'REFUNDED';
 
 /** Money moves forward only: PENDING→PAID/FAILED, customer-reported transfers
- * (AWAITING_CONFIRMATION)→PAID/FAILED after statement check, FAILED→PENDING
- * (retry). PAID is terminal here (refunds happen exclusively through
+ * (AWAITING_CONFIRMATION)→PAID/FAILED after statement check, or →PENDING when
+ * the customer mis-clicked "transferred" (nothing captured, back to pending).
+ * FAILED→PENDING (retry). PAID is terminal here (refunds happen exclusively through
  * cancellation), and so is REFUNDED. */
 const ALLOWED_PAYMENT_TRANSITIONS: Record<PaymentStatus, Array<'PENDING' | 'PAID' | 'FAILED'>> = {
   PENDING: ['PAID', 'FAILED'],
-  AWAITING_CONFIRMATION: ['PAID', 'FAILED'],
+  AWAITING_CONFIRMATION: ['PAID', 'FAILED', 'PENDING'],
   FAILED: ['PENDING'],
   PAID: [],
   REFUNDED: [],
 };
 
 export async function adminUpdatePaymentStatus(bookingId: string, status: 'PENDING' | 'PAID' | 'FAILED') {
-  const booking = await prisma.booking.findUnique({
-    where: { id: bookingId },
-    include: { payment: true },
-  });
-  if (!booking) throw new AppError(404, 'Booking not found');
-  if (!booking.payment) throw new AppError(400, 'Booking has no payment');
-  const current = booking.payment.status as PaymentStatus;
-  if (current === status) return booking.payment;
-  // A cancelled booking must never capture money (refunds go through cancel).
-  if (booking.bookingStatus === 'CANCELLED' && status === 'PAID') {
-    throw new AppError(400, 'Cancelled booking cannot be paid');
-  }
-  if (!ALLOWED_PAYMENT_TRANSITIONS[current].includes(status)) {
-    throw new AppError(400, 'Invalid payment status transition');
-  }
-  return prisma.payment.update({
-    where: { bookingId },
-    data: { status, paidAt: status === 'PAID' ? new Date() : null },
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} FOR UPDATE`;
+    const booking = await tx.booking.findUnique({
+      where: { id: bookingId },
+      include: { payment: true },
+    });
+    if (!booking) throw new AppError(404, 'Booking not found');
+    if (!booking.payment) throw new AppError(400, 'Booking has no payment');
+    const current = booking.payment.status as PaymentStatus;
+    if (current === status) return booking.payment;
+    // Completed bookings are immutable history — money must not move.
+    if (booking.bookingStatus === 'COMPLETED') throw new AppError(400, 'Completed booking cannot be modified');
+    // A cancelled booking must never capture money (refunds go through cancel).
+    if (booking.bookingStatus === 'CANCELLED' && status === 'PAID') {
+      throw new AppError(400, 'Cancelled booking cannot be paid');
+    }
+    if (!ALLOWED_PAYMENT_TRANSITIONS[current].includes(status)) {
+      throw new AppError(400, 'Invalid payment status transition');
+    }
+    const pay = await tx.payment.update({
+      where: { bookingId },
+      data: { status, paidAt: status === 'PAID' ? new Date() : null },
+    });
+    if (status === 'PAID') {
+      await tx.booking.update({ where: { id: bookingId }, data: { holdExpiresAt: null } });
+    }
+    return pay;
   });
 }
 
@@ -285,41 +412,82 @@ export async function adminUpdateBookingStatus(id: string, status: 'PENDING' | '
   }
   // A tour that has not taken place yet can never be COMPLETED (this is also
   // what guarantees reviews only exist for finished trips).
-  if (status === 'COMPLETED' && booking.travelDate.getTime() > Date.now()) {
-    throw new AppError(400, 'Tour has not taken place yet');
+  // Compare calendar days in UTC (same as booking creation) so a tour today
+  // can be completed, but a future date can never be.
+  // Money guard: only PAID bookings complete — revenue (PAID-only) must match
+  // completedOrders, otherwise reports drift. CASH is no exception: mark PAID
+  // when cash is received, then COMPLETED.
+  // Re-activation guard: a cancelled tour that already started can never go
+  // back to CONFIRMED (would corrupt seats/coupon quota on a past trip).
+  if (status === 'COMPLETED' || (booking.bookingStatus === 'CANCELLED' && status === 'CONFIRMED')) {
+    const travelDay = Date.UTC(
+      booking.travelDate.getUTCFullYear(),
+      booking.travelDate.getUTCMonth(),
+      booking.travelDate.getUTCDate(),
+    );
+    const n = new Date();
+    const todayUtc = Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate());
+    if (status === 'COMPLETED' && travelDay > todayUtc) throw new AppError(400, 'Tour has not taken place yet');
+    if (status === 'CONFIRMED' && travelDay < todayUtc)
+      throw new AppError(400, 'Cannot re-activate a tour that already started');
+    if (status === 'COMPLETED') {
+      const pay = await prisma.payment.findUnique({ where: { bookingId: id } });
+      if (!pay || pay.status !== 'PAID') throw new AppError(400, 'Only paid bookings can be completed');
+    }
   }
 
   return prisma.$transaction(async (tx) => {
+    // Serialize concurrent admin/user cancels: lock the booking row first and
+    // re-validate the transition inside the tx (the pre-check can't prevent a race).
+    await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${id} FOR UPDATE`;
+    const fresh = await tx.booking.findUnique({ where: { id } });
+    if (!fresh) throw new AppError(404, 'Booking not found');
+    if (fresh.bookingStatus === status) return fresh;
+    if (!ALLOWED_TRANSITIONS[fresh.bookingStatus as BookingStatus].includes(status)) {
+      throw new AppError(400, 'Invalid status transition');
+    }
+    if (status === 'COMPLETED') {
+      const pay = await tx.payment.findUnique({ where: { bookingId: id } });
+      if (!pay || pay.status !== 'PAID') throw new AppError(400, 'Only paid bookings can be completed');
+    }
+    if (fresh.bookingStatus === 'CANCELLED' && status === 'CONFIRMED') {
+      const day = fresh.travelDate;
+      const travelDay = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate());
+      const n = new Date();
+      const todayUtc = Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate());
+      if (travelDay < todayUtc) throw new AppError(400, 'Cannot re-activate a tour that already started');
+    }
     // Re-activating a cancelled booking re-occupies seats (validated) and
     // re-consumes coupon quota + per-date inventory (mirrors cancel inverse).
-    if (booking.bookingStatus === 'CANCELLED' && status !== 'CANCELLED') {
-      await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${booking.tourId} FOR UPDATE`;
-      const tour = await tx.tour.findUnique({ where: { id: booking.tourId } });
+    // Use fresh (locked) row throughout — the outer `booking` may be stale.
+    if (fresh.bookingStatus === 'CANCELLED' && status !== 'CANCELLED') {
+      await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${fresh.tourId} FOR UPDATE`;
+      const tour = await tx.tour.findUnique({ where: { id: fresh.tourId } });
       if (!tour) throw new AppError(404, 'Tour not found');
       if (tour.status !== 'ACTIVE') throw new AppError(400, 'Tour is no longer available');
-      if (booking.guests > tour.availableSeats)
+      if (fresh.guests > tour.availableSeats)
         throw new AppError(400, `Only ${tour.availableSeats} seat(s) left`);
-      const day = toCalendarDay(booking.travelDate);
-      await tx.$queryRaw`SELECT "id" FROM "TourDate" WHERE "tourId" = ${booking.tourId} AND "date" = ${day} FOR UPDATE`;
+      const day = toCalendarDay(fresh.travelDate);
+      await tx.$queryRaw`SELECT "id" FROM "TourDate" WHERE "tourId" = ${fresh.tourId} AND "date" = ${day} FOR UPDATE`;
       const dateRow = await tx.tourDate.findUnique({
-        where: { tourId_date: { tourId: booking.tourId, date: day } },
+        where: { tourId_date: { tourId: fresh.tourId, date: day } },
       });
-      if (dateRow && dateRow.booked + booking.guests > dateRow.capacity) {
+      if (dateRow && dateRow.booked + fresh.guests > dateRow.capacity) {
         throw new AppError(400, 'This date is sold out');
       }
       await tx.tour.update({
         where: { id: tour.id },
-        data: { availableSeats: { decrement: booking.guests } },
+        data: { availableSeats: { decrement: fresh.guests } },
       });
       if (dateRow) {
         await tx.tourDate.update({
           where: { id: dateRow.id },
-          data: { booked: { increment: booking.guests } },
+          data: { booked: { increment: fresh.guests } },
         });
       }
-      if (booking.couponId) {
-        await tx.$queryRaw`SELECT "id" FROM "Coupon" WHERE "id" = ${booking.couponId} FOR UPDATE`;
-        const coupon = await tx.coupon.findUnique({ where: { id: booking.couponId } });
+      if (fresh.couponId) {
+        await tx.$queryRaw`SELECT "id" FROM "Coupon" WHERE "id" = ${fresh.couponId} FOR UPDATE`;
+        const coupon = await tx.coupon.findUnique({ where: { id: fresh.couponId } });
         if (coupon) {
           if (!coupon.active || coupon.expiresAt.getTime() < Date.now()) {
             throw new AppError(400, 'Coupon is no longer valid');
@@ -341,26 +509,26 @@ export async function adminUpdateBookingStatus(id: string, status: 'PENDING' | '
     // refunds captured payments and returns coupon quota (mirrors user cancel).
     // A COMPLETED tour already happened, so its seats must not be released back
     // into inventory.
-    if (status === 'CANCELLED' && (booking.bookingStatus === 'PENDING' || booking.bookingStatus === 'CONFIRMED')) {
+    if (status === 'CANCELLED' && (fresh.bookingStatus === 'PENDING' || fresh.bookingStatus === 'CONFIRMED')) {
       // Same locks as the customer cancel path: serialize against concurrent
       // creates/cancels touching seats, per-date buckets or coupon quota.
-      const cancelDay = toCalendarDay(booking.travelDate);
-      await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${booking.tourId} FOR UPDATE`;
-      await tx.$queryRaw`SELECT "id" FROM "TourDate" WHERE "tourId" = ${booking.tourId} AND "date" = ${cancelDay} FOR UPDATE`;
-      if (booking.couponId) {
-        await tx.$queryRaw`SELECT "id" FROM "Coupon" WHERE "id" = ${booking.couponId} FOR UPDATE`;
+      const cancelDay = toCalendarDay(fresh.travelDate);
+      await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${fresh.tourId} FOR UPDATE`;
+      await tx.$queryRaw`SELECT "id" FROM "TourDate" WHERE "tourId" = ${fresh.tourId} AND "date" = ${cancelDay} FOR UPDATE`;
+      if (fresh.couponId) {
+        await tx.$queryRaw`SELECT "id" FROM "Coupon" WHERE "id" = ${fresh.couponId} FOR UPDATE`;
       }
       await tx.tour.update({
-        where: { id: booking.tourId },
-        data: { availableSeats: { increment: booking.guests } },
+        where: { id: fresh.tourId },
+        data: { availableSeats: { increment: fresh.guests } },
       });
       const cancelRow = await tx.tourDate.findUnique({
-        where: { tourId_date: { tourId: booking.tourId, date: cancelDay } },
+        where: { tourId_date: { tourId: fresh.tourId, date: cancelDay } },
       });
       if (cancelRow && cancelRow.booked > 0) {
         await tx.tourDate.update({
           where: { id: cancelRow.id },
-          data: { booked: Math.max(0, cancelRow.booked - booking.guests) },
+          data: { booked: Math.max(0, cancelRow.booked - fresh.guests) },
         });
       }
       const payment = await tx.payment.findUnique({ where: { bookingId: id } });
@@ -370,14 +538,50 @@ export async function adminUpdateBookingStatus(id: string, status: 'PENDING' | '
         // Reported but never verified: nothing captured, back to PENDING.
         await tx.payment.update({ where: { bookingId: id }, data: { status: 'PENDING' } });
       }
-      if (booking.couponId) {
+      if (fresh.couponId) {
         await tx.coupon.updateMany({
-          where: { id: booking.couponId, usedCount: { gt: 0 } },
+          where: { id: fresh.couponId, usedCount: { gt: 0 } },
           data: { usedCount: { decrement: 1 } },
         });
       }
+      if (fresh.loyaltyUsed > 0) {
+        await tx.user.update({ where: { id: fresh.userId }, data: { loyaltyPoints: { increment: fresh.loyaltyUsed } } });
+        await tx.loyaltyTransaction.create({
+          data: { userId: fresh.userId, points: fresh.loyaltyUsed, type: 'REFUND', bookingId: id },
+        });
+      }
     }
-    return tx.booking.update({ where: { id }, data: { bookingStatus: status } });
+    const result = await tx.booking.update({
+      where: { id },
+      data: {
+        bookingStatus: status,
+        ...(status === 'CANCELLED'
+          ? { cancelReason: 'ADMIN', holdExpiresAt: null }
+          : status === 'CONFIRMED' && fresh.bookingStatus === 'CANCELLED'
+            ? { cancelReason: null }
+            : {}),
+      },
+    });
+    // Earn loyalty on completion: 1 point per 10.000₫ (idempotent per booking).
+    if (status === 'COMPLETED') {
+      const { EARN_RATE_VND } = await import('./loyalty.service.js');
+      const done = await tx.booking.findUnique({ where: { id }, select: { total: true, userId: true } });
+      if (done) {
+        const earned = Math.floor(done.total / EARN_RATE_VND);
+        if (earned > 0) {
+          const already = await tx.loyaltyTransaction.findFirst({
+            where: { bookingId: id, type: 'EARN' },
+          });
+          if (!already) {
+            await tx.user.update({ where: { id: done.userId }, data: { loyaltyPoints: { increment: earned } } });
+            await tx.loyaltyTransaction.create({
+              data: { userId: done.userId, points: earned, type: 'EARN', bookingId: id },
+            });
+          }
+        }
+      }
+    }
+    return result;
   });
 }
 
@@ -406,7 +610,14 @@ export async function adminUpdateUser(id: string, data: { role?: 'CUSTOMER' | 'A
     });
     if (others === 0) throw new AppError(400, 'Cannot remove the last active admin');
   }
-  const user = await prisma.user.update({ where: { id }, data });
+  const user = await prisma.user.update({
+    where: { id },
+    data: {
+      ...data,
+      // Role/status change must revoke existing sessions immediately.
+      ...(demoting || disabling ? { tokenVersion: { increment: 1 } } : {}),
+    },
+  });
   return toSafeUser(user);
 }
 
@@ -436,6 +647,11 @@ export function adminCreateCoupon(data: {
   expiresAt: string;
   usageLimit?: number | null;
   active: boolean;
+  applicableTourIds?: string[];
+  applicableCategory?: 'Beach' | 'Mountains' | 'Culture' | 'Relaxation' | null;
+  startsAt?: string | null;
+  maxDiscount?: number | null;
+  minGuests?: number;
 }) {
   return prisma.coupon.create({
     data: {
@@ -446,20 +662,25 @@ export function adminCreateCoupon(data: {
       expiresAt: parseExpiry(data.expiresAt),
       usageLimit: data.usageLimit ?? null,
       active: data.active,
+      applicableTourIds: (data.applicableTourIds ?? []) as unknown as Prisma.InputJsonValue,
+      applicableCategory: data.applicableCategory ?? null,
+      startsAt: data.startsAt ? new Date(data.startsAt) : null,
+      maxDiscount: data.maxDiscount ?? null,
+      minGuests: data.minGuests ?? 0,
     },
   });
 }
 
 export async function adminUpdateCoupon(
   id: string,
-  data: Partial<{ type: 'PERCENT' | 'FIXED'; value: number; minOrder: number; expiresAt: string; usageLimit: number | null; active: boolean }>,
+  data: Partial<{ type: 'PERCENT' | 'FIXED'; value: number; minOrder: number; expiresAt: string; usageLimit: number | null; active: boolean; applicableTourIds: string[]; applicableCategory: 'Beach' | 'Mountains' | 'Culture' | 'Relaxation' | null; startsAt: string | null; maxDiscount: number | null; minGuests: number }>,
 ) {
+  const existing = await prisma.coupon.findUnique({ where: { id } });
+  if (!existing) throw new AppError(404, 'Resource not found');
   // The zod patch schema only sees the fields being patched, so it cannot
   // catch { value: 150 } on an existing PERCENT coupon (a >100% percent is
   // capped at free). Resolve the effective type against the stored row.
   if (data.value !== undefined || data.type !== undefined) {
-    const existing = await prisma.coupon.findUnique({ where: { id } });
-    if (!existing) throw new AppError(404, 'Resource not found');
     const effectiveType = data.type ?? existing.type;
     const effectiveValue = data.value ?? existing.value;
     if (effectiveType === 'PERCENT' && (effectiveValue < 1 || effectiveValue > 100)) {
@@ -468,6 +689,20 @@ export async function adminUpdateCoupon(
     if (effectiveType === 'FIXED' && effectiveValue < 1) {
       throw new AppError(400, 'Coupon value must be positive');
     }
+  }
+  // Cross-field guards on effective values.
+  const effStarts = data.startsAt !== undefined ? (data.startsAt ? new Date(data.startsAt) : null) : existing.startsAt;
+  const effExpires = data.expiresAt ? parseExpiry(data.expiresAt) : existing.expiresAt;
+  if (effStarts && effExpires && effStarts.getTime() > effExpires.getTime()) {
+    throw new AppError(400, 'Coupon start date must be before expiry date');
+  }
+  if (data.usageLimit !== undefined && data.usageLimit !== null && data.usageLimit < existing.usedCount) {
+    throw new AppError(400, 'Usage limit cannot be below used count');
+  }
+  if (data.maxDiscount !== undefined && data.maxDiscount !== null) {
+    const effType = data.type ?? existing.type;
+    if (effType !== 'PERCENT') throw new AppError(400, 'maxDiscount only applies to PERCENT coupons');
+    if (data.maxDiscount < 1) throw new AppError(400, 'maxDiscount must be positive');
   }
   return prisma.coupon.update({
     where: { id },
@@ -478,19 +713,40 @@ export async function adminUpdateCoupon(
       ...(data.expiresAt ? { expiresAt: parseExpiry(data.expiresAt) } : {}),
       ...(data.usageLimit !== undefined ? { usageLimit: data.usageLimit } : {}),
       ...(data.active !== undefined ? { active: data.active } : {}),
+      ...(data.applicableTourIds !== undefined ? { applicableTourIds: data.applicableTourIds as unknown as Prisma.InputJsonValue } : {}),
+      ...(data.applicableCategory !== undefined ? { applicableCategory: data.applicableCategory } : {}),
+      ...(data.startsAt !== undefined ? { startsAt: data.startsAt ? new Date(data.startsAt) : null } : {}),
+      ...(data.maxDiscount !== undefined ? { maxDiscount: data.maxDiscount } : {}),
+      ...(data.minGuests !== undefined ? { minGuests: data.minGuests } : {}),
     },
   });
 }
 
-export function adminDeleteCoupon(id: string) {
+export async function adminDeleteCoupon(id: string) {
+  // Hard-delete would orphan audit history (Booking.couponId is SetNull).
+  // Block when the coupon was ever used — disable via active=false instead.
+  const used = await prisma.booking.count({ where: { couponId: id } });
+  if (used > 0) throw new AppError(400, 'Cannot delete coupon with existing bookings');
   return prisma.coupon.delete({ where: { id } });
 }
 
 export function adminListTourDates(tourId: string) {
-  return prisma.tourDate.findMany({ where: { tourId }, orderBy: { date: 'asc' } });
+  return prisma.tourDate.findMany({
+    where: { tourId },
+    include: { guide: true, vehicle: true },
+    orderBy: { date: 'asc' },
+  });
 }
 
-export async function adminUpsertTourDate(tourId: string, dateStr: string, capacity: number) {
+export async function adminUpsertTourDate(
+  tourId: string,
+  dateStr: string,
+  capacity: number,
+  guideId?: string | null,
+  vehicleId?: string | null,
+) {
+  const gId = typeof guideId === 'string' && guideId.trim() ? guideId.trim() : guideId ? guideId : null;
+  const vId = typeof vehicleId === 'string' && vehicleId.trim() ? vehicleId.trim() : vehicleId ? vehicleId : null;
   const tour = await prisma.tour.findUnique({ where: { id: tourId } });
   if (!tour) throw new AppError(404, 'Tour not found');
   const parsed = new Date(dateStr);
@@ -499,25 +755,52 @@ export async function adminUpsertTourDate(tourId: string, dateStr: string, capac
   const today = new Date();
   const todayUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
   if (day < todayUtc) throw new AppError(400, 'Invalid travel date');
-  const existing = await prisma.tourDate.findUnique({ where: { tourId_date: { tourId, date: day } } });
-  if (existing && capacity < existing.booked) {
-    throw new AppError(400, 'Capacity cannot be below booked seats');
+  // Fleet must exist + active; capacity can never exceed the assigned vehicle.
+  if (vId) {
+    const v = await prisma.vehicle.findUnique({ where: { id: vId } });
+    if (!v) throw new AppError(404, 'Vehicle not found');
+    if (!v.active) throw new AppError(400, 'Vehicle is inactive');
+    if (capacity > v.seats) throw new AppError(400, `Capacity cannot exceed vehicle seats (${v.seats})`);
   }
-  return prisma.tourDate.upsert({
-    where: { tourId_date: { tourId, date: day } },
-    create: { tourId, date: day, capacity },
-    update: { capacity },
+  if (gId) {
+    const g = await prisma.guide.findUnique({ where: { id: gId } });
+    if (!g) throw new AppError(404, 'Guide not found');
+    if (!g.active) throw new AppError(400, 'Guide is inactive');
+  }
+  // Serialize against concurrent bookings touching the same bucket:
+  // lock tour + date row inside a tx so capacity can't drop below booked
+  // between check and upsert.
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Tour" WHERE "id" = ${tourId} FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "TourDate" WHERE "tourId" = ${tourId} AND "date" = ${day} FOR UPDATE`;
+    const existing = await tx.tourDate.findUnique({ where: { tourId_date: { tourId, date: day } } });
+    if (existing && capacity < existing.booked) {
+      throw new AppError(400, 'Capacity cannot be below booked seats');
+    }
+    return tx.tourDate.upsert({
+      where: { tourId_date: { tourId, date: day } },
+      create: { tourId, date: day, capacity, guideId: gId ?? null, vehicleId: vId ?? null },
+      update: {
+        capacity,
+        ...(guideId !== undefined ? { guideId: gId ?? null } : {}),
+        ...(vehicleId !== undefined ? { vehicleId: vId ?? null } : {}),
+      },
+      include: { guide: true, vehicle: true },
+    });
   });
 }
 
 export async function adminDeleteTourDate(id: string) {
-  const row = await prisma.tourDate.findUnique({ where: { id } });
-  if (!row) throw new AppError(404, 'Resource not found');
-  if (row.booked > 0) {
-    throw new AppError(400, 'Operation violates data constraints (record is in use)');
-  }
-  await prisma.tourDate.delete({ where: { id } });
-  return { success: true };
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "TourDate" WHERE "id" = ${id} FOR UPDATE`;
+    const row = await tx.tourDate.findUnique({ where: { id } });
+    if (!row) throw new AppError(404, 'Resource not found');
+    if (row.booked > 0) {
+      throw new AppError(400, 'Operation violates data constraints (record is in use)');
+    }
+    await tx.tourDate.delete({ where: { id } });
+    return { success: true };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -527,13 +810,15 @@ export async function adminDeleteTourDate(id: string) {
 
 /**
  * Tổng quan kinh doanh của 1 tháng:
- * - revenue: tiền thực thu (Payment PAID theo paidAt trong tháng)
+ * - revenue: tiền thực thu (Payment PAID theo paidAt trong tháng, giờ VN)
  * - orders: đơn ghi nhận trong tháng (Booking tạo trong tháng, loại CANCELLED)
- * - completedOrders: đơn hoàn thành trong tháng
+ * - completedOrders: đơn hoàn thành trong tháng (Booking COMPLETED theo
+ *   updatedAt trong tháng — thời điểm admin bấm hoàn thành, cùng khung giờ VN
+ *   với revenue để so sánh được)
  * - toursActive: tour đang bán
- * - completionRate: % hoàn thành (hiệu suất shop)
+ * - completionRate: completedOrders / orders (hiệu suất thu trong tháng)
  * - byCategory: doanh thu theo danh mục tour (Biển/Núi/Văn hóa/Nghỉ dưỡng)
- * - trend: xu hướng 12 tháng của năm chọn (cho biểu đồ cột)
+ * - trend: xu hướng 12 tháng của năm chọn (cho biểu đồ cột, theo paidAt)
  */
 export async function getRevenueOverview(monthInput?: unknown, yearInput?: unknown) {
   const now = new Date();
@@ -551,43 +836,43 @@ export async function getRevenueOverview(monthInput?: unknown, yearInput?: unkno
   const yearStart = vnDayStartUTC(safeYear, 1, 1);
   const yearEnd = vnDayStartUTC(safeYear + 1, 1, 1);
 
-  const [paidInMonth, bookingsInMonth, toursActive, paidInYear] = await Promise.all([
-    prisma.payment.findMany({
-      where: { status: 'PAID', paidAt: { gte: start, lt: end } },
-      select: {
-        amount: true,
-        paidAt: true,
-        booking: { select: { id: true, tour: { select: { category: true, title: true } } } },
-      },
-    }),
-    prisma.booking.findMany({
+  // Gom nhóm trong DB (không tải rows về Node): tổng theo danh mục, đếm theo
+  // trạng thái, trend theo tháng VN (+7h trước khi trunc để khớp lịch hiển thị).
+  // SUM dùng bigint để không tràn int khi doanh thu tháng > 2.1 tỷ.
+  const [catGroups, bookingGroups, completedInMonth, toursActive, trendGroups] = await Promise.all([
+    prisma.$queryRaw<Array<{ category: string; total: string | number; count: number }>>`
+      SELECT t."category" AS "category", SUM(p."amount")::bigint AS "total", COUNT(*)::int AS "count"
+      FROM "Payment" p
+      JOIN "Booking" b ON b."id" = p."bookingId"
+      JOIN "Tour" t ON t."id" = b."tourId"
+      WHERE p."status" = 'PAID' AND p."paidAt" >= ${start} AND p."paidAt" < ${end}
+      GROUP BY t."category" ORDER BY "total" DESC
+    `,
+    prisma.booking.groupBy({
+      by: ['bookingStatus'],
       where: { createdAt: { gte: start, lt: end } },
-      select: { id: true, total: true, guests: true, bookingStatus: true },
+      _count: { _all: true },
+    }),
+    prisma.booking.count({
+      where: { bookingStatus: 'COMPLETED', updatedAt: { gte: start, lt: end } },
     }),
     prisma.tour.count({ where: { status: 'ACTIVE' } }),
-    prisma.payment.findMany({
-      where: { status: 'PAID', paidAt: { gte: yearStart, lt: yearEnd } },
-      select: { amount: true, paidAt: true },
-    }),
+    prisma.$queryRaw<Array<{ key: string; total: string | number; orders: number }>>`
+      SELECT to_char(date_trunc('month', ("paidAt" AT TIME ZONE 'UTC' + interval '7 hours')), 'YYYY-MM') AS "key",
+             SUM("amount")::bigint AS "total", COUNT(*)::int AS "orders"
+      FROM "Payment"
+      WHERE "status" = 'PAID' AND "paidAt" >= ${yearStart} AND "paidAt" < ${yearEnd}
+      GROUP BY 1
+    `,
   ]);
 
-  const revenue = paidInMonth.reduce((s, p) => s + p.amount, 0);
-  const validBookings = bookingsInMonth.filter((b) => b.bookingStatus !== 'CANCELLED');
-  const orders = validBookings.length;
-  const completedOrders = bookingsInMonth.filter((b) => b.bookingStatus === 'COMPLETED').length;
-  const totalInMonth = bookingsInMonth.length;
-  const completionRate = totalInMonth > 0 ? (completedOrders / totalInMonth) * 100 : 0;
-
-  // Doanh thu theo danh mục
-  const catMap = new Map<string, { category: string; total: number; count: number }>();
-  for (const p of paidInMonth) {
-    const cat = (p.booking?.tour?.category as string | undefined) ?? 'Unknown';
-    const cur = catMap.get(cat) ?? { category: cat, total: 0, count: 0 };
-    cur.total += p.amount;
-    cur.count += 1;
-    catMap.set(cat, cur);
-  }
-  const byCategory = [...catMap.values()].sort((a, b) => b.total - a.total);
+  const revenue = catGroups.reduce((s, g) => s + Number(g.total), 0);
+  const byCategory = catGroups.map((g) => ({ category: g.category, total: Number(g.total), count: g.count }));
+  const countOf = (s: string) => bookingGroups.find((g) => g.bookingStatus === s)?._count._all ?? 0;
+  const totalInMonth = bookingGroups.reduce((s, g) => s + g._count._all, 0);
+  const completedOrders = completedInMonth;
+  const orders = totalInMonth - countOf('CANCELLED');
+  const completionRate = orders > 0 ? (completedOrders / orders) * 100 : 0;
 
   // Xu hướng 12 tháng trong năm
   const trend: Array<{ key: string; label: string; total: number; orders: number }> = [];
@@ -596,13 +881,11 @@ export async function getRevenueOverview(monthInput?: unknown, yearInput?: unkno
     trend.push({ key, label: `Tháng ${m}`, total: 0, orders: 0 });
   }
   const trendByKey = new Map(trend.map((t) => [t.key, t]));
-  for (const p of paidInYear) {
-    if (!p.paidAt) continue;
-    // Xếp theo tháng VN hiển thị (không phải tháng UTC) để khớp cửa sổ VN.
-    const bucket = trendByKey.get(vnMonthKey(p.paidAt));
+  for (const g of trendGroups) {
+    const bucket = trendByKey.get(g.key);
     if (bucket) {
-      bucket.total += p.amount;
-      bucket.orders += 1;
+      bucket.total = Number(g.total);
+      bucket.orders = g.orders;
     }
   }
 
@@ -624,27 +907,44 @@ export async function getRevenueOverview(monthInput?: unknown, yearInput?: unkno
  * Báo cáo doanh thu theo ngày (màn Lịch sử giao dịch):
  * - goodsTotal: tiền hàng trong ngày (tổng Booking tạo trong ngày, loại đơn hủy)
  * - collectedTotal: thực thu trong ngày (Payment PAID theo paidAt)
+ * - pendingTotal/pendingCount: tiền đang chờ thu thật (PENDING/AWAITING tạo
+ *   trong ngày; FAILED loại ra vì không bao giờ thu được cho tới khi retry)
  * - guests: tổng số khách trong ngày
- * - completedOrders: số đơn PAID trong ngày
- * - transactions: chi tiết từng giao dịch (mã GD, thời gian, nội dung, loại, số tiền, trạng thái)
+ * - completedOrders: số booking COMPLETED trong ngày (theo updatedAt — thời
+ *   điểm hoàn thành, không phải số payment PAID)
+ * - transactions: thực thu (paidAt trong ngày) + chờ thu (createdAt trong ngày,
+ *   PENDING/AWAITING), sắp xếp mới nhất trước, phân trang chung.
  */
-export async function getRevenueDaily(dateInput?: unknown) {
+export async function getRevenueDaily(dateInput?: unknown, page?: unknown, limit?: unknown) {
   const day = parseDay(dateInput);
   if (!day) throw new AppError(400, 'Invalid date');
   const { start, end, label } = day;
+  const { page: p, limit: l } = pageParams(page, limit);
 
-  const [bookings, payments] = await Promise.all([
-    prisma.booking.findMany({
-      where: { createdAt: { gte: start, lt: end } },
-      include: {
-        tour: { select: { id: true, title: true } },
-        payment: true,
-        user: { select: { id: true, name: true } },
-      },
-      orderBy: { createdAt: 'desc' },
+  // Tổng hợp bằng aggregate/count (chịu được ngày đông), chi tiết phân trang.
+  // transactions = thực thu (paidAt trong ngày) UNION chờ thu (createdAt trong ngày, PENDING/AWAITING).
+  const pendingWhere: Prisma.PaymentWhereInput = {
+    createdAt: { gte: start, lt: end },
+    status: { in: ['PENDING', 'AWAITING_CONFIRMATION'] },
+  };
+  const paidWhere: Prisma.PaymentWhereInput = { paidAt: { gte: start, lt: end }, status: 'PAID' };
+  const [goodsAgg, paidAgg, completedCount, pendingAgg, pendingCount, paidTx, pendingTx] = await Promise.all([
+    prisma.booking.aggregate({
+      where: { createdAt: { gte: start, lt: end }, bookingStatus: { not: 'CANCELLED' } },
+      _sum: { total: true, guests: true },
+      _count: { _all: true },
     }),
+    prisma.payment.aggregate({
+      where: paidWhere,
+      _sum: { amount: true },
+    }),
+    prisma.booking.count({
+      where: { bookingStatus: 'COMPLETED', updatedAt: { gte: start, lt: end } },
+    }),
+    prisma.payment.aggregate({ where: pendingWhere, _sum: { amount: true } }),
+    prisma.payment.count({ where: pendingWhere }),
     prisma.payment.findMany({
-      where: { paidAt: { gte: start, lt: end } },
+      where: paidWhere,
       include: {
         booking: {
           include: {
@@ -655,34 +955,49 @@ export async function getRevenueDaily(dateInput?: unknown) {
       },
       orderBy: { paidAt: 'desc' },
     }),
+    prisma.payment.findMany({
+      where: pendingWhere,
+      include: {
+        booking: {
+          include: {
+            tour: { select: { id: true, title: true } },
+            user: { select: { id: true, name: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
   ]);
 
-  const validBookings = bookings.filter((b) => b.bookingStatus !== 'CANCELLED');
-  const goodsTotal = validBookings.reduce((s, b) => s + b.total, 0);
-  const paidOnly = payments.filter((p) => p.status === 'PAID');
-  const collectedTotal = paidOnly.reduce((s, p) => s + p.amount, 0);
-  const guests = validBookings.reduce((s, b) => s + b.guests, 0);
-
-  const transactions = payments.map((p) => ({
-    id: p.transactionCode ?? p.id,
-    bookingId: p.bookingId,
-    bookingCode: p.booking?.bookingCode ?? '',
-    time: p.paidAt ?? p.updatedAt,
-    tourTitle: p.booking?.tour?.title ?? '',
-    customerName: p.booking?.user?.name ?? p.booking?.customerName ?? '',
-    customerEmail: p.booking?.customerEmail ?? '',
-    method: p.method,
-    amount: p.amount,
-    status: p.status,
-  }));
+  const toTx = (pay: (typeof paidTx)[number] | (typeof pendingTx)[number]) => ({
+    id: pay.transactionCode ?? pay.id,
+    bookingId: pay.bookingId,
+    bookingCode: pay.booking?.bookingCode ?? '',
+    time: pay.paidAt ?? pay.createdAt,
+    tourTitle: pay.booking?.tour?.title ?? '',
+    customerName: pay.booking?.user?.name ?? pay.booking?.customerName ?? '',
+    customerEmail: pay.booking?.customerEmail ?? '',
+    method: pay.method,
+    amount: pay.amount,
+    status: pay.status,
+  });
+  // Gộp 2 luồng rồi sort mới-nhất-trước, phân trang trên mảng gộp (ngày đơn lẻ, < vài trăm GD).
+  const merged = [...paidTx.map(toTx), ...pendingTx.map(toTx)].sort(
+    (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime(),
+  );
+  const txTotal = merged.length;
+  const transactions = merged.slice((p - 1) * l, p * l);
 
   return {
     date: label,
-    goodsTotal,
-    collectedTotal,
-    guests,
-    totalBookings: validBookings.length,
-    completedOrders: paidOnly.length,
+    goodsTotal: goodsAgg._sum.total ?? 0,
+    collectedTotal: paidAgg._sum.amount ?? 0,
+    pendingTotal: pendingAgg._sum?.amount ?? 0,
+    pendingCount,
+    guests: goodsAgg._sum.guests ?? 0,
+    totalBookings: goodsAgg._count._all,
+    completedOrders: completedCount,
     transactions,
+    pagination: { page: p, limit: l, total: txTotal, totalPages: Math.max(1, Math.ceil(txTotal / l)) },
   };
 }

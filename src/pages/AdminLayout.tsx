@@ -1,6 +1,6 @@
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { CalendarCheck, LayoutDashboard, Mail, Map, MessageSquareText, Ticket, Users, Wallet } from 'lucide-react';
+import { Bus, CalendarCheck, HelpCircle, History, LayoutDashboard, Mail, Map, MessageSquareText, MessagesSquare, Newspaper, Package, ScanLine, Ticket, Users, Wallet } from 'lucide-react';
 import { PageContainer } from '../components/ui/kit';
 
 export function AdminLayout() {
@@ -12,10 +12,18 @@ export function AdminLayout() {
     { to: '/admin/doanh-thu-ngay', label: t('admin.daily'), icon: Wallet, exact: false },
     { to: '/admin/tours', label: t('admin.tours'), icon: Map, exact: false },
     { to: '/admin/bookings', label: t('admin.bookings'), icon: CalendarCheck, exact: false },
+    { to: '/admin/doi-soat', label: 'Đối soát', icon: Wallet, exact: false },
+    { to: '/admin/nhat-ky', label: 'Nhật ký', icon: History, exact: false },
+    { to: '/admin/doi-xe', label: 'Đội xe/HDV', icon: Bus, exact: false },
     { to: '/admin/users', label: t('admin.users'), icon: Users, exact: false },
     { to: '/admin/coupons', label: t('admin.coupons'), icon: Ticket, exact: false },
     { to: '/admin/reviews', label: t('admin.reviews'), icon: MessageSquareText, exact: false },
     { to: '/admin/contact', label: t('admin.contact'), icon: Mail, exact: false },
+    { to: '/admin/posts', label: t('admin.posts', { defaultValue: 'Bài viết' }) as string, icon: Newspaper, exact: false },
+    { to: '/admin/combos', label: t('admin.combos', { defaultValue: 'Combos' }) as string, icon: Package, exact: false },
+    { to: '/admin/scan', label: t('admin.scan', { defaultValue: 'Điểm danh' }) as string, icon: ScanLine, exact: false },
+    { to: '/admin/chats', label: t('admin.chats', { defaultValue: 'Chat' }) as string, icon: MessagesSquare, exact: false },
+    { to: '/admin/questions', label: t('admin.questions', { defaultValue: 'Hỏi đáp' }) as string, icon: HelpCircle, exact: false },
   ];
   const isActive = (tab: (typeof tabs)[number]) => (tab.exact ? pathname === tab.to : pathname === tab.to || pathname.startsWith(`${tab.to}/`));
 

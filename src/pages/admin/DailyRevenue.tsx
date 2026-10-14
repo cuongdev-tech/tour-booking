@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { api, apiErrorMessage } from '../../services/api';
 import { useEnumLabels } from '../../i18n/enums';
 import { formatDateTimeStr } from '../../i18n/format';
-import { formatCurrency } from '../../types';
+import { formatCurrency, type Pagination } from '../../types';
 import { Button, Pager, Skeleton, StatusBadge } from '../../components/ui/kit';
 
 interface Tx {
@@ -24,10 +24,13 @@ interface Daily {
   date: string;
   goodsTotal: number;
   collectedTotal: number;
+  pendingTotal?: number;
+  pendingCount?: number;
   guests: number;
   totalBookings: number;
   completedOrders: number;
   transactions: Tx[];
+  pagination: Pagination;
 }
 
 function todayLabel(): string {
@@ -45,27 +48,19 @@ export function DailyRevenue() {
   const [txPage, setTxPage] = useState(1);
   const TX_PAGE_SIZE = 10;
 
-  const load = (d: string = applied) => {
+  const load = (d: string = applied, p: number = txPage) => {
     setLoading(true);
     api
-      .get('/admin/revenue/daily', { params: { date: d } })
+      .get('/admin/revenue/daily', { params: { date: d, page: p, limit: TX_PAGE_SIZE } })
       .then((r) => setData(r.data))
       .catch((err) => toast.error(apiErrorMessage(err, t('adminDaily.loadFailed') as string)))
       .finally(() => setLoading(false));
   };
 
   useEffect(() => {
-    setTxPage(1);
-    void load(applied);
+    void load(applied, txPage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applied]);
-
-  const txTotalPages = Math.max(1, Math.ceil((data?.transactions.length ?? 0) / TX_PAGE_SIZE));
-  const txPagination =
-    data && data.transactions.length > TX_PAGE_SIZE
-      ? { page: Math.min(txPage, txTotalPages), limit: TX_PAGE_SIZE, total: data.transactions.length, totalPages: txTotalPages }
-      : null;
-  const txRows = data ? data.transactions.slice((Math.min(txPage, txTotalPages) - 1) * TX_PAGE_SIZE, Math.min(txPage, txTotalPages) * TX_PAGE_SIZE) : [];
+  }, [applied, txPage]);
 
   return (
     <div className="min-w-0 antialiased">
@@ -86,8 +81,14 @@ export function DailyRevenue() {
           </label>
           <button
             type="button"
-            onClick={() => date && setApplied(date)}
-            className="inline-flex min-h-10 items-center rounded-lg bg-neutral-900 px-5 py-2 text-[13px] font-bold tracking-wide text-white uppercase hover:bg-neutral-700"
+            onClick={() => {
+              if (date) {
+                setTxPage(1);
+                setApplied(date);
+              }
+            }}
+            disabled={!date || loading}
+            className="inline-flex min-h-10 items-center rounded-lg bg-neutral-900 px-5 py-2 text-[13px] font-bold tracking-wide text-white uppercase hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {t('adminDaily.filter')}
           </button>
@@ -96,6 +97,7 @@ export function DailyRevenue() {
             onClick={() => {
               const today = todayLabel();
               setDate(today);
+              setTxPage(1);
               setApplied(today);
             }}
             className="inline-flex min-h-10 items-center rounded-lg border border-red-400 px-3 py-2 text-[13px] font-normal text-red-500 hover:bg-red-50"
@@ -116,13 +118,18 @@ export function DailyRevenue() {
           <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-xl border border-neutral-200 bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
               <p className="text-[11px] font-semibold uppercase tracking-[0.04em] text-neutral-500">{t('adminDaily.goods', { date: data.date })}</p>
-              <p className="mt-2 text-[22px] leading-7 font-extrabold tabular-nums text-blue-600">{formatCurrency(data.goodsTotal).replace('₫', '').trim()} đ</p>
+              <p className="mt-2 text-[22px] leading-7 font-extrabold tabular-nums text-blue-600">{formatCurrency(data.goodsTotal)}</p>
               <p className="mt-1 text-[12px] font-normal text-neutral-400">{t('adminDaily.goodsHint')}</p>
             </div>
             <div className="rounded-xl border border-neutral-200 bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
               <p className="text-[11px] font-semibold uppercase tracking-[0.04em] text-neutral-500">{t('adminDaily.collected', { date: data.date })}</p>
-              <p className="mt-2 text-[22px] leading-7 font-extrabold tabular-nums text-emerald-600">{formatCurrency(data.collectedTotal).replace('₫', '').trim()} đ</p>
+              <p className="mt-2 text-[22px] leading-7 font-extrabold tabular-nums text-emerald-600">{formatCurrency(data.collectedTotal)}</p>
               <p className="mt-1 text-[12px] font-normal text-neutral-400">{t('adminDaily.collectedHint')}</p>
+              {(data.pendingCount ?? 0) > 0 && (
+                <p className="mt-1 text-[12px] font-semibold tabular-nums text-amber-600">
+                  {t('adminDaily.pending', { amount: formatCurrency(data.pendingTotal ?? 0), count: data.pendingCount ?? 0 })}
+                </p>
+              )}
             </div>
             <div className="rounded-xl border border-neutral-200 bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
               <p className="text-[11px] font-semibold uppercase tracking-[0.04em] text-neutral-500">{t('adminDaily.guests')}</p>
@@ -156,7 +163,7 @@ export function DailyRevenue() {
                     </td>
                   </tr>
                 )}
-                {txRows.map((tx) => (
+                {data.transactions.map((tx) => (
                   <tr key={tx.id} className="border-t border-neutral-100 transition-colors hover:bg-neutral-50/60">
                     <td className="px-4 py-3 font-mono text-xs tabular-nums text-neutral-900">{tx.bookingCode || tx.id.slice(0, 8)}</td>
                     <td className="px-4 py-3 text-[13px] font-normal tabular-nums text-neutral-600">
@@ -180,7 +187,7 @@ export function DailyRevenue() {
               </tbody>
             </table>
           </div>
-          <Pager pagination={txPagination} onPage={setTxPage} />
+          <Pager pagination={data.pagination} onPage={setTxPage} />
         </>
       ) : (
         <div className="mt-4 rounded-xl border border-neutral-200 bg-white p-8 text-center">

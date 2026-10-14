@@ -1,11 +1,17 @@
-/** Số rút gọn cho biểu đồ (1.500.000 -> "1.5tr", 2.000 -> "2k"). */
+import { currentIntlLocale } from '../i18n/format';
+
+/** Compact number for charts (1.500.000 -> locale-aware "1.5M"). */
 export function fmtShort(v: number): string {
-  if (v >= 1_000_000) {
-    const m = v / 1_000_000;
-    return `${Number(m.toFixed(m >= 10 ? 0 : 1))}tr`;
+  try {
+    return new Intl.NumberFormat(currentIntlLocale(), { notation: 'compact', maximumFractionDigits: 1 }).format(v);
+  } catch {
+    if (v >= 1_000_000) {
+      const m = v / 1_000_000;
+      return `${Number(m.toFixed(m >= 10 ? 0 : 1))}M`;
+    }
+    if (v >= 1_000) return `${Math.round(v / 1_000)}K`;
+    return String(v);
   }
-  if (v >= 1_000) return `${Math.round(v / 1_000)}k`;
-  return String(v);
 }
 
 /** Tháng trong key YYYY-MM của API, null khi key lạ. */

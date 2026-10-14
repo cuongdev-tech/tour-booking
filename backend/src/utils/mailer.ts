@@ -69,6 +69,23 @@ export function resetLink(token: string): string {
   return `${env.frontendUrl.replace(/\/$/, '')}/reset-password?token=${token}`;
 }
 
+export function verifyEmailLink(token: string): string {
+  return `${env.frontendUrl.replace(/\/$/, '')}/verify-email?token=${token}`;
+}
+
+export function verificationMail(verifyUrl: string): { subject: string; text: string } {
+  return {
+    subject: 'Verify your Tour Booking email',
+    text: [
+      'Welcome to Tour Booking! Please verify your email to start booking tours.',
+      '',
+      `Verify link (valid for 24 hours): ${verifyUrl}`,
+      '',
+      'If you did not create this account, ignore this email.',
+    ].join('\n'),
+  };
+}
+
 export function bookingLink(code: string): string {
   return `${env.frontendUrl.replace(/\/$/, '')}/booking-success/${code}`;
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useForm } from 'react-hook-form';
@@ -116,8 +116,14 @@ export function Login() {
           className="mt-6 space-y-4"
           onSubmit={handleSubmit(async (v) => {
             try {
-              await login(v.email, v.password);
-              navigate(next, { replace: true });
+              const u = await login(v.email, v.password);
+              // Admins landing on ?next=/checkout|/bookings|/favorites would bounce
+              // off RequireCustomer — send them to the management counterpart at once.
+              if (u?.role === 'ADMIN' && /^\/(checkout|bookings|favorites)/.test(next)) {
+                navigate('/admin/bookings', { replace: true });
+              } else {
+                navigate(next, { replace: true });
+              }
             } catch (err) {
               toast.error(apiErrorMessage(err, t('auth.loginFailed')));
             }
@@ -158,21 +164,34 @@ export function Register() {
   // Preserve deep links just like Login (same open-redirect guard).
   const rawNext = params.get('next') ?? '/';
   const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
+  const refFromUrl = params.get('ref') ?? '';
 
   const registerSchema = useMemo(
     () =>
       z.object({
         name: z.string().min(2, t('validation.nameRequired')),
         email: z.string().email(t('validation.emailInvalid')),
-        phone: z.string().regex(/^[0-9+\s-]{8,20}$/, t('validation.phoneInvalid')).optional().or(z.literal('')),
+        phone: z
+          .string()
+          .regex(/^[0-9+\s-]{8,20}$/, t('validation.phoneInvalid'))
+          .refine((s) => s === '' || (s.match(/[0-9]/g) ?? []).length >= 6, t('validation.phoneInvalid'))
+          .optional()
+          .or(z.literal('')),
         password: z.string().min(6, t('validation.passwordMin')),
+        referralCode: z.string().max(20).optional().or(z.literal('')),
       }),
     [t],
   );
 
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<z.infer<typeof registerSchema>>({
+  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<z.infer<typeof registerSchema>>({
     resolver: zodResolver(registerSchema),
+    defaultValues: { referralCode: refFromUrl },
   });
+
+  useEffect(() => {
+    reset((prev) => ({ ...(prev as object), referralCode: refFromUrl }) as never);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refFromUrl]);
 
   return (
     <AuthShell>
@@ -185,7 +204,13 @@ export function Register() {
           className="mt-6 space-y-4"
           onSubmit={handleSubmit(async (v) => {
             try {
-              await signup({ name: v.name, email: v.email, password: v.password, phone: v.phone || undefined });
+              const cleanRef = (v.referralCode || '').trim().toUpperCase() || undefined;
+              const u = await signup({ name: v.name, email: v.email, password: v.password, phone: v.phone || undefined, referralCode: cleanRef });
+              if ((u as { emailVerified?: boolean })?.emailVerified === false) {
+                toast.success(t('auth.verifySent', { defaultValue: 'Đã gửi link xác thực vào email của bạn.' }) as string);
+                navigate('/verify-email', { replace: true });
+                return;
+              }
               navigate(next, { replace: true });
             } catch (err) {
               toast.error(apiErrorMessage(err, t('auth.registerFailed')));
@@ -200,6 +225,9 @@ export function Register() {
           </Field>
           <Field label={t('auth.phone')} error={errors.phone?.message}>
             <Input id="register-phone" {...register('phone')} placeholder="0901234567" inputMode="tel" autoComplete="tel" />
+          </Field>
+          <Field label="Mã giới thiệu (tùy chọn)">
+            <Input id="register-ref" {...register('referralCode')} placeholder="REF-XXXXXX" autoComplete="off" />
           </Field>
           <PasswordInput id="register-password" placeholder={t('auth.passwordPlaceholder')} error={errors.password?.message} input={{ ...register('password') }} />
           <Button type="submit" isLoading={isSubmitting} className="w-full py-3">{t('auth.signupButton')}</Button>

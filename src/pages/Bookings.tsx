@@ -6,13 +6,23 @@ import { CalendarDays, Download, Luggage, Users, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, apiErrorMessage } from '../services/api';
 import { downloadInvoice } from '../services/invoice';
-import { startOfTodayLocal, todayLocalInput } from '../utils/date';
+import { startOfTodayUtc, todayLocalInput, todayUtcInput, toLocalDateInput, toUtcDay } from '../utils/date';
 import { useEnumLabels } from '../i18n/enums';
 import { formatDateStr } from '../i18n/format';
 import { formatCurrency, type Booking, type Review } from '../types';
 import { Button, Card, EmptyState, Field, Input, Modal, PageContainer, QuantityStepper, RetryState, SafeImage, Skeleton, Stars, StatusBadge, Textarea } from '../components/ui/kit';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { useDocumentMeta } from '../hooks/useDocumentMeta';
+
+type BookingWithSig = Booking & { ticketSignature?: string | null; checkedInAt?: string | null };
+
+interface BookingMessage {
+  id: string;
+  body: string;
+  senderRole: string;
+  sender: { id: string; name: string };
+  createdAt: string;
+}
 
 export function Bookings() {
   const { t } = useTranslation();
@@ -32,16 +42,24 @@ export function Bookings() {
   const [deleteReviewId, setDeleteReviewId] = useState<string | null>(null);
   const [editBooking, setEditBooking] = useState<Booking | null>(null);
   const [editDate, setEditDate] = useState('');
+  const [editAvail, setEditAvail] = useState<{ managed: boolean; remaining: number | null } | null>(null);
+  const [editAvailLoading, setEditAvailLoading] = useState(false);
   const [editGuests, setEditGuests] = useState<Array<{ fullName: string; phone: string; email: string; isChild: boolean; dob: string }>>([]);
   const [editNote, setEditNote] = useState('');
   const [submittingEdit, setSubmittingEdit] = useState(false);
   const [invoiceId, setInvoiceId] = useState<string | null>(null);
   const [claimingId, setClaimingId] = useState<string | null>(null);
+  const [supportFor, setSupportFor] = useState<Booking | null>(null);
+  const [messages, setMessages] = useState<BookingMessage[]>([]);
+  const [msgLoading, setMsgLoading] = useState(false);
+  const [msgBody, setMsgBody] = useState('');
+  const [msgSending, setMsgSending] = useState(false);
   useDocumentMeta(t('bookings.title', { count: bookings.length }));
 
-  const todayStart = startOfTodayLocal();
-  // Matches backend cancelBooking: upcoming PENDING/CONFIRMED bookings whose travel
-  // day hasn't passed. Past tours can't be cancelled (server enforces this too).
+  const todayStart = startOfTodayUtc();
+  // Matches backend cancelBooking (UTC calendar-day frame): upcoming
+  // PENDING/CONFIRMED bookings whose travel day hasn't passed. Past tours can't
+  // be cancelled (server enforces this too).
   // Paid bookings past the tour's free-cancel deadline are also locked (admin only).
   const freeCancelOver = (b: Booking) => {
     const hours = b.tour?.freeCancelHours;
@@ -50,11 +68,74 @@ export function Bookings() {
     if (Number.isNaN(travel)) return false;
     return Date.now() > travel - hours * 3600_000;
   };
+  const travelDayOk = (b: Booking) => {
+    const day = toUtcDay(b.travelDate);
+    return !Number.isNaN(day) && day >= todayStart;
+  };
+  const cancelLockedReason = (b: Booking): 'past' | 'deadline' | null => {
+    if (b.bookingStatus !== 'PENDING' && b.bookingStatus !== 'CONFIRMED') return null;
+    if (!travelDayOk(b)) return 'past';
+    if (freeCancelOver(b)) return 'deadline';
+    return null;
+  };
   const canCancel = (b: Booking) =>
     (b.bookingStatus === 'PENDING' || b.bookingStatus === 'CONFIRMED') &&
-    !Number.isNaN(new Date(b.travelDate).getTime()) &&
-    new Date(b.travelDate).getTime() >= todayStart &&
+    travelDayOk(b) &&
     !freeCancelOver(b);
+  // Dòng chính sách hủy client-side (mirror BE getCancelPolicy): null = free
+  // linh hoạt; unpaid luôn free (chưa thu tiền thì không có gì để mất).
+  const cancelPolicyText = (b: Booking): string => {
+    const hours = b.tour?.freeCancelHours;
+    if (hours == null) {
+      return t('tourDetails.freeCancelFlexible', { defaultValue: 'Hủy miễn phí linh hoạt' }) as string;
+    }
+    const travel = new Date(b.travelDate).getTime();
+    if (Number.isNaN(travel)) {
+      return t('tourDetails.freeCancelHoursShort', { defaultValue: 'Hủy miễn phí trước {{hours}} giờ khởi hành', hours }) as string;
+    }
+    const deadline = new Date(travel - hours * 3600_000);
+    const paid = b.payment?.status === 'PAID';
+    if (!paid) {
+      return t('bookings.freeCancelUnpaid', { defaultValue: 'Hủy miễn phí linh hoạt (chưa thanh toán)' }) as string;
+    }
+    if (Date.now() <= deadline.getTime()) {
+      return t('tourDetails.freeCancelUntil', { defaultValue: 'Hủy miễn phí đến {{date}}', date: formatDateStr(deadline.toISOString()) }) as string;
+    }
+    return t('bookings.freeCancelEnded', { defaultValue: 'Đã hết hạn hủy miễn phí' }) as string;
+  };
+  // Số tiền hoàn mirror BE (cancel → PAID thành REFUNDED): chỉ hoàn khi đã trả
+  // và còn trong hạn hủy miễn phí.
+  const refundOf = (b: Booking): number => {
+    if (b.payment?.status !== 'PAID') return 0;
+    const hours = b.tour?.freeCancelHours;
+    if (hours == null) return b.total;
+    const travel = new Date(b.travelDate).getTime();
+    if (Number.isNaN(travel)) return 0;
+    return Date.now() <= travel - hours * 3600_000 ? b.total : 0;
+  };
+  const verifyUrlOf = (b: Booking): string | null => {
+    const usable =
+      b.bookingStatus !== 'CANCELLED' &&
+      (b.payment?.status === 'PAID' || b.payment?.method === 'CASH');
+    if (!usable) return null;
+    const sig = (b as BookingWithSig).ticketSignature;
+    const base = `${window.location.origin}/verify/${b.bookingCode}`;
+    return sig ? `${base}?t=${encodeURIComponent(sig)}` : base;
+  };
+  const missingSig = (b: Booking): boolean => {
+    const usable =
+      b.bookingStatus !== 'CANCELLED' &&
+      (b.payment?.status === 'PAID' || b.payment?.method === 'CASH');
+    return usable && !(b as BookingWithSig).ticketSignature;
+  };
+  const modifyLockedReason = (b: Booking): 'paid' | 'processing' | 'locked' | null => {
+    if (!canCancel(b)) return 'locked';
+    const st = b.payment?.status ?? 'PENDING';
+    if (st === 'PAID') return 'paid';
+    // PENDING + FAILED are editable (no money captured); AWAITING is locked.
+    if (st !== 'PENDING' && st !== 'FAILED') return 'processing';
+    return null;
+  };
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -112,16 +193,65 @@ export function Bookings() {
     }
   };
 
+  const loadMessages = async (bookingId: string, silent = false) => {
+    if (!silent) setMsgLoading(true);
+    try {
+      const { data } = await api.get(`/bookings/${bookingId}/messages`);
+      setMessages(data.data ?? []);
+    } catch {
+      if (!silent) toast.error(apiErrorMessage(null, t('bookings.loadFailed')));
+    } finally {
+      if (!silent) setMsgLoading(false);
+    }
+  };
+
+  const openSupport = (b: Booking) => {
+    setSupportFor(b);
+    setMessages([]);
+    setMsgBody('');
+    void loadMessages(b.id);
+  };
+
+  const sendMessage = async () => {
+    if (!supportFor) return;
+    const body = msgBody.trim();
+    if (!body) return;
+    setMsgSending(true);
+    try {
+      const { data } = await api.post(`/bookings/${supportFor.id}/messages`, { body });
+      if (data.message) setMessages((prev) => [...prev, data.message]);
+      else await loadMessages(supportFor.id, true);
+      setMsgBody('');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, t('bookings.sendFailed', { defaultValue: 'Gửi tin nhắn thất bại' }) as string));
+    } finally {
+      setMsgSending(false);
+    }
+  };
+
+  // Poll tin nhắn mỗi 15s khi modal hỗ trợ đang mở.
+  useEffect(() => {
+    if (!supportFor) return;
+    const id = window.setInterval(() => {
+      void loadMessages(supportFor.id, true);
+    }, 15000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supportFor?.id]);
+
   const openReview = (id: string, existing?: Review) => {
     setReviewFor(id);
     setEditingReview(existing ?? null);
     setRating(existing?.rating ?? 5);
     setComment(existing?.comment ?? '');
     setReviewImages(Array.isArray(existing?.images) ? existing.images.slice(0, 3) : []);
+    setReviewVideo(Array.isArray(existing?.videos) && existing.videos[0] ? existing.videos[0] : '');
   };
 
   // Review photos: device files converted to dataURL (≤700KB each, max 3 —
   // backend accepts URLs or data-images and re-validates).
+  // Review video: URL only (max 1, no base64 — too heavy), e.g. YouTube/mp4 link.
+  const [reviewVideo, setReviewVideo] = useState('');
   const addReviewFiles = async (files: FileList | null) => {
     if (!files) return;
     const slots = 3 - reviewImages.length;
@@ -147,6 +277,12 @@ export function Bookings() {
 
   const submitReview = async (bookingId: string) => {
     if (rating < 1 || rating > 5) return;
+    const videoUrl = reviewVideo.trim();
+    if (videoUrl && !/^https?:\/\/.{4,500}$/.test(videoUrl)) {
+      toast.error(apiErrorMessage(null, t('bookings.reviewFailed')));
+      return;
+    }
+    const videos = videoUrl ? [videoUrl] : [];
     setSubmittingReview(true);
     try {
       if (editingReview) {
@@ -154,11 +290,12 @@ export function Bookings() {
           rating,
           comment: comment.trim() || null,
           images: reviewImages,
+          videos,
         });
         toast.success(t('bookings.reviewUpdated'));
         setMyReviews((prev) => ({ ...prev, [bookingId]: data.review }));
       } else {
-        const { data } = await api.post('/reviews', { bookingId, rating, comment: comment.trim() || undefined, images: reviewImages });
+        const { data } = await api.post('/reviews', { bookingId, rating, comment: comment.trim() || undefined, images: reviewImages, videos });
         toast.success(t('bookings.reviewSuccess'));
         setReviewedIds((prev) => new Set(prev).add(bookingId));
         setMyReviews((prev) => ({ ...prev, [bookingId]: data.review }));
@@ -166,6 +303,7 @@ export function Bookings() {
       setEditingReview(null);
       setReviewFor(null);
       setReviewImages([]);
+      setReviewVideo('');
     } catch (err) {
       toast.error(apiErrorMessage(err, t('bookings.reviewFailed')));
     } finally {
@@ -194,11 +332,16 @@ export function Bookings() {
     }
   };
 
-  const canModify = (b: Booking) => canCancel(b) && (b.payment?.status ?? 'PENDING') === 'PENDING';
+  const canModify = (b: Booking) => {
+    if (!canCancel(b)) return false;
+    const st = b.payment?.status ?? 'PENDING';
+    return st === 'PENDING' || st === 'FAILED';
+  };
 
   const openEdit = (b: Booking) => {
     setEditBooking(b);
-    setEditDate(b.travelDate.slice(0, 10));
+    setEditDate(toLocalDateInput(b.travelDate));
+    setEditAvail(null);
     const names = b.guestsList ?? [];
     setEditGuests(
       Array.from({ length: b.guests }, (_, i) => ({
@@ -221,13 +364,57 @@ export function Bookings() {
     );
   };
 
+  // Per-date bucket for the edited day: the new day must fit the new party.
+  // Same-day edits keep their own seats (remaining + current guests).
+  useEffect(() => {
+    if (!editBooking || !editDate || Number.isNaN(Date.parse(editDate))) {
+      setEditAvail(null);
+      setEditAvailLoading(false);
+      return;
+    }
+    const ctrl = new AbortController();
+    setEditAvail(null);
+    setEditAvailLoading(true);
+    api
+      .get(`/tours/${editBooking.tourId}/availability`, { params: { date: editDate }, signal: ctrl.signal })
+      .then((r) => setEditAvail({ managed: r.data.managed, remaining: r.data.remaining }))
+      .catch(() => {
+        // Assume an open date on failure (backend enforces the real bucket).
+        if (!ctrl.signal.aborted) setEditAvail({ managed: false, remaining: null });
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setEditAvailLoading(false);
+      });
+    return () => ctrl.abort();
+  }, [editBooking, editDate]);
+
+  const editSeatCap = (() => {
+    if (!editBooking) return 100;
+    const tour = editBooking.tour;
+    const globalCap = Math.max(0, tour?.availableSeats ?? 0) + editBooking.guests;
+    if (!editAvail || editAvail.managed !== true || editAvail.remaining == null) return globalCap;
+    const sameDay = toLocalDateInput(editBooking.travelDate) === editDate;
+    return editAvail.remaining + (sameDay ? editBooking.guests : 0);
+  })();
+  const editUnknown = editBooking !== null && editDate !== '' && !Number.isNaN(Date.parse(editDate)) && editAvail === null;
+
   const submitEdit = async () => {
     if (!editBooking) return;
     const day = new Date(editDate);
     // Client-side guardrails mirror the backend (which re-validates everything):
-    // a valid future date plus a named traveler per seat.
-    if (!editDate || Number.isNaN(day.getTime()) || day.getTime() < todayStart) {
+    // a valid future date (UTC frame) plus a named traveler per seat.
+    if (!editDate || Number.isNaN(day.getTime()) || toUtcDay(editDate) < todayStart) {
       toast.error(apiErrorMessage(null, t('checkout.missingInfo')));
+      return;
+    }
+    if (editUnknown || editAvailLoading) {
+      toast.error(apiErrorMessage(null, t('tours.loadError')));
+      return;
+    }
+    if (editGuests.length > editSeatCap) {
+      toast.error(
+        apiErrorMessage(null, t('backendErrors.dateSoldOut')),
+      );
       return;
     }
     if (editGuests.length < 1 || editGuests.some((g) => g.fullName.trim().length < 2)) {
@@ -314,6 +501,31 @@ export function Bookings() {
                 <span className="inline-flex items-center gap-1.5"><Users className="h-4 w-4 text-slate-400" aria-hidden />{t('bookings.guestsSuffix', { count: b.guests })}{(b.children ?? 0) > 0 && ` (${b.adults ?? b.guests - (b.children ?? 0)} NL · ${b.children} TE)`}</span>
                 <span className="inline-flex items-center gap-1.5 font-semibold tabular-nums text-slate-900"><Wallet className="h-4 w-4 text-slate-400" aria-hidden />{formatCurrency(b.total)}</span>
               </dl>
+              <p className="mt-2 rounded-lg bg-emerald-50 px-3 py-1.5 text-xs leading-relaxed text-emerald-700">
+                {cancelPolicyText(b)}
+              </p>
+              {b.comboGroup && (b.bookingStatus === 'PENDING' || b.bookingStatus === 'CONFIRMED') && (
+                <p className="mt-2 rounded-lg bg-orange-50 px-3 py-1.5 text-xs leading-relaxed text-orange-700">
+                  {t('bookings.comboLegNote', { defaultValue: 'Thuộc combo {{group}} — hủy leg này không hủy các leg còn lại.', group: b.comboGroup }) as string}
+                </p>
+              )}
+              {missingSig(b) && (
+                <p className="mt-2 rounded-lg bg-amber-50 px-3 py-1.5 text-xs leading-relaxed text-amber-700">
+                  {t('bookings.missingSig', { defaultValue: 'Vé chưa có chữ ký số — liên hệ shop để cấp lại trước khi lên xe.' }) as string}
+                </p>
+              )}
+              {verifyUrlOf(b) && (
+                <p className="mt-2 text-xs">
+                  <a
+                    href={verifyUrlOf(b) as string}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-semibold text-orange-700 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-700"
+                  >
+                    {t('verify.title', { defaultValue: 'Xác thực vé' }) as string} · {b.bookingCode}
+                  </a>
+                </p>
+              )}
               <div className="mt-4 flex flex-wrap justify-end gap-2">
                 <Link to={`/booking-success/${b.bookingCode}`}><Button variant="secondary">{t('bookings.details')}</Button></Link>
                 <Button
@@ -325,15 +537,33 @@ export function Bookings() {
                       bookingStatus: labels.bookingStatus(b.bookingStatus),
                       paymentStatus: labels.paymentStatus(b.payment?.status ?? 'PENDING'),
                     })
-                      .catch((err) => toast.error(apiErrorMessage(err, t('tours.loadError'))))
+                      .catch((err) => toast.error(apiErrorMessage(err, t('bookings.invoiceFailed'))))
                       .finally(() => setInvoiceId(null));
                   }}
                 >
                   {invoiceId === b.id ? null : <Download className="h-4 w-4" aria-hidden />}
                   {t('bookings.invoice')}
                 </Button>
-                {canModify(b) && (
+                {canModify(b) ? (
                   <Button variant="outline" onClick={() => openEdit(b)}>{t('bookings.modify')}</Button>
+                ) : (
+                  (b.bookingStatus === 'PENDING' || b.bookingStatus === 'CONFIRMED') && (
+                    <span
+                      title={
+                        modifyLockedReason(b) === 'paid'
+                          ? t('backendErrors.paidNoModify')
+                          : modifyLockedReason(b) === 'processing'
+                            ? t('backendErrors.paymentLocked')
+                            : cancelLockedReason(b) === 'deadline'
+                              ? t('backendErrors.freeCancelEnded')
+                              : t('backendErrors.tourStartedNoCancel')
+                      }
+                      className="inline-flex min-h-11 cursor-not-allowed items-center rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-300"
+                      aria-disabled="true"
+                    >
+                      {t('bookings.modify')}
+                    </span>
+                  )
                 )}
                 {b.payment?.method === 'BANK_TRANSFER' &&
                   (b.payment?.status === 'PENDING' || b.payment?.status === 'FAILED') &&
@@ -344,12 +574,29 @@ export function Bookings() {
                 )}
                 {/* Mirror of the backend rule: reviews only for finished trips
                     (COMPLETED status + travel day already passed). */}
-                {b.bookingStatus === 'COMPLETED' && new Date(b.travelDate).getTime() <= Date.now() && !reviewedIds.has(b.id) && !myReviews[b.id] && (
+                {b.bookingStatus === 'COMPLETED' && toUtcDay(b.travelDate) <= todayStart && !reviewedIds.has(b.id) && !myReviews[b.id] && (
                   <Button variant="outline" onClick={() => openReview(b.id)}>{t('bookings.writeReview')}</Button>
                 )}
-                {canCancel(b) && (
-                  <Button variant="danger" onClick={() => setConfirmId(b.id)}>{t('bookings.cancel')}</Button>
+                {canCancel(b) ? (
+                  <Button variant="danger" onClick={() => setConfirmId(b.id)}>{t('bookings.cancelRefund', { defaultValue: 'Hủy & hoàn tiền' }) as string}</Button>
+                ) : (
+                  (b.bookingStatus === 'PENDING' || b.bookingStatus === 'CONFIRMED') && (
+                    <span
+                      title={
+                        cancelLockedReason(b) === 'deadline'
+                          ? t('backendErrors.freeCancelEnded')
+                          : t('backendErrors.tourStartedNoCancel')
+                      }
+                      className="inline-flex min-h-11 cursor-not-allowed items-center rounded-xl border border-red-100 px-4 py-2.5 text-sm font-medium text-red-200"
+                      aria-disabled="true"
+                    >
+                      {t('bookings.cancel')}
+                    </span>
+                  )
                 )}
+                <Button variant="secondary" onClick={() => openSupport(b)}>
+                  {t('bookings.support', { defaultValue: 'Hỗ trợ' }) as string}
+                </Button>
               </div>
               {reviewFor === b.id ? (
                 <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -389,7 +636,7 @@ export function Bookings() {
                     {reviewImages.length > 0 && (
                       <div className="mb-2 flex gap-2 overflow-x-auto pb-1">
                         {reviewImages.map((src, i) => (
-                          <span key={`${i}-${src.slice(0, 24)}`} className="relative shrink-0">
+                          <span key={`review-img-${i}`} className="relative shrink-0">
                             <img src={src} alt="" className="h-20 w-28 rounded-xl border border-slate-200 object-cover" />
                             <button
                               type="button"
@@ -418,9 +665,12 @@ export function Bookings() {
                         + {t('bookings.addPhotos', { defaultValue: 'Thêm ảnh' }) as string}
                       </label>
                     )}
+                    <Field label="Video (URL, tùy chọn)">
+                      <Input value={reviewVideo} onChange={(e) => setReviewVideo(e.target.value)} placeholder="https://...mp4" inputMode="url" />
+                    </Field>
                   </div>
                   <div className="mt-3 flex justify-end gap-2">
-                    <Button variant="secondary" onClick={() => { setReviewFor(null); setEditingReview(null); setReviewImages([]); }}>{t('bookings.dialogCancel')}</Button>
+                    <Button variant="secondary" onClick={() => { setReviewFor(null); setEditingReview(null); setReviewImages([]); setReviewVideo(''); }}>{t('bookings.dialogCancel')}</Button>
                     <Button isLoading={submittingReview} onClick={() => void submitReview(b.id)}>{t('bookings.reviewSubmit')}</Button>
                   </div>
                 </div>
@@ -456,7 +706,17 @@ export function Bookings() {
       <ConfirmDialog
         open={confirmId !== null}
         title={t('bookings.dialogTitle')}
-        message={t('bookings.dialogMessage')}
+        message={(() => {
+          const b = bookings.find((x) => x.id === confirmId);
+          const base = t('bookings.dialogMessage') as string;
+          if (!b) return base;
+          const refund = refundOf(b);
+          const refundLine = t('bookings.refundAmount', {
+            defaultValue: 'Số tiền hoàn: {{amount}}',
+            amount: formatCurrency(refund),
+          }) as string;
+          return `${base}\n${refundLine}`;
+        })()}
         confirmLabel={t('bookings.dialogConfirm')}
         cancelLabel={t('bookings.dialogCancel')}
         onClose={() => setConfirmId(null)}
@@ -482,7 +742,7 @@ export function Bookings() {
             <p className="mt-1 truncate text-sm text-slate-500">{editBooking.tour?.title}</p>
             <div className="mt-4 space-y-4">
               <Field label={t('tourDetails.travelDate')}>
-                <Input type="date" value={editDate} min={todayLocalInput()} onChange={(e) => setEditDate(e.target.value)} />
+                <Input type="date" value={editDate} min={todayUtcInput()} onChange={(e) => setEditDate(e.target.value)} />
               </Field>
               <div>
                 <span id="edit-guests-label" className="mb-1.5 block text-sm font-medium text-slate-700">
@@ -496,17 +756,21 @@ export function Bookings() {
                     if (!tour) return 100;
                     // Global seats were already decremented by this booking, so the
                     // user can grow back up to (remaining + current) without overselling.
-                    const seatCeiling = Math.max(0, tour.availableSeats) + editBooking.guests;
+                    // Managed dates use the day's bucket instead (same-day keeps own seats).
                     return Math.max(
                       tour.minGuests,
-                      Math.min(100, tour.maxGuests, seatCeiling),
+                      Math.min(100, tour.maxGuests, editSeatCap),
                     );
                   })()}
+                  disabled={editUnknown || editAvailLoading}
                   onChange={setEditCount}
                   decreaseLabel={t('tourDetails.decreaseGuests')}
                   increaseLabel={t('tourDetails.increaseGuests')}
                   labelledBy="edit-guests-label"
                 />
+                {editUnknown && (
+                  <p role="status" className="mt-1.5 text-xs text-slate-400">…</p>
+                )}
                 <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
                   {editGuests.map((g, i) => (
                     <div key={i}>
@@ -554,7 +818,50 @@ export function Bookings() {
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setEditBooking(null)}>{t('bookings.dialogCancel')}</Button>
-              <Button isLoading={submittingEdit} onClick={() => void submitEdit()}>{t('common.save')}</Button>
+              <Button isLoading={submittingEdit} disabled={editUnknown || editAvailLoading} onClick={() => void submitEdit()}>{t('common.save')}</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+      <Modal open={supportFor !== null} onClose={() => setSupportFor(null)} label={t('bookings.support', { defaultValue: 'Hỗ trợ' }) as string} wide>
+        {supportFor && (
+          <div>
+            <h3 className="text-lg font-bold tracking-tight text-slate-900">
+              {t('bookings.support', { defaultValue: 'Hỗ trợ' }) as string} · {supportFor.bookingCode}
+            </h3>
+            <p className="mt-1 truncate text-sm text-slate-500">{supportFor.tour?.title}</p>
+            <div className="mt-4 max-h-80 space-y-3 overflow-y-auto rounded-xl bg-slate-50 p-3">
+              {msgLoading ? (
+                <p className="text-sm text-slate-500">…</p>
+              ) : messages.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  {t('bookings.supportEmpty', { defaultValue: 'Chưa có tin nhắn nào. Hãy hỏi shop nhé!' }) as string}
+                </p>
+              ) : (
+                messages.map((m) => (
+                  <div key={m.id} className="rounded-lg bg-white p-3 shadow-sm">
+                    <p className="text-xs font-semibold text-slate-900">
+                      {m.sender?.name ?? m.senderRole}
+                      <span className="ml-2 font-normal text-slate-400">{formatDateStr(m.createdAt)}</span>
+                    </p>
+                    <p className="mt-1 text-sm leading-relaxed text-slate-700">{m.body}</p>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <Input
+                value={msgBody}
+                onChange={(e) => setMsgBody(e.target.value)}
+                placeholder={t('bookings.supportPlaceholder', { defaultValue: 'Nhập tin nhắn...' }) as string}
+                aria-label={t('bookings.support', { defaultValue: 'Hỗ trợ' }) as string}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void sendMessage();
+                }}
+              />
+              <Button isLoading={msgSending} onClick={() => void sendMessage()} className="shrink-0">
+                {t('bookings.send', { defaultValue: 'Gửi' }) as string}
+              </Button>
             </div>
           </div>
         )}

@@ -24,6 +24,11 @@ export function translateBackendError(message: string, fallback?: string): strin
     ['Invalid travel date', t('backendErrors.invalidTravelDate')],
     ['Invalid email or password', t('backendErrors.invalidCredentials')],
     ['Email already registered', t('backendErrors.emailRegistered')],
+    ['Unable to register with this email', t('backendErrors.emailRegistered')],
+    ['Email verification required', t('auth.verifyRequired', { defaultValue: 'Bạn cần xác thực email trước khi đặt tour.' })],
+    ['Verification link is invalid or expired', t('auth.verifyInvalid', { defaultValue: 'Link xác thực không hợp lệ hoặc đã hết hạn (24h).' })],
+    ['Hold no longer expired', t('bookings.holdExpired', { defaultValue: 'Giữ chỗ đã hết hạn hoặc đã thanh toán.' })],
+    ['Booking hold expired', t('bookings.holdExpired', { defaultValue: 'Giữ chỗ đã hết hạn hoặc đã thanh toán.' })],
     ['Account is disabled', t('backendErrors.accountDisabled')],
     ['Not your booking', t('backendErrors.notYourBooking')],
     ['Booking already cancelled', t('backendErrors.alreadyCancelled')],
@@ -55,7 +60,13 @@ export function translateBackendError(message: string, fallback?: string): strin
     ['At least one adult is required', t('backendErrors.adultRequired')],
     ['Selected add-ons are invalid', t('backendErrors.addonsInvalid')],
     ['Free cancellation period has ended', t('backendErrors.freeCancelEnded')],
+    ['Coupon is not active yet', t('backendErrors.couponInactive')],
+    ['Coupon is not applicable to this tour', t('backendErrors.couponNotApplicable', { defaultValue: 'Coupon không áp dụng cho tour này' })],
+    ['Not enough loyalty points', t('backendErrors.notEnoughPoints', { defaultValue: 'Không đủ điểm loyalty' })],
+    ['Cannot re-activate a tour that already started', t('backendErrors.tourStartedNoCancel')],
+    ['Cannot delete coupon with existing bookings', t('backendErrors.recordInUse')],
     ['Cannot vote your own review', t('backendErrors.ownVote')],
+    ['Only paid bookings can be completed', t('backendErrors.completedNeedsPaid')],
     ['Admin accounts cannot place bookings', t('backendErrors.adminNoBooking')],
     ['You cannot modify your own account', t('adminUsers.selfActionForbidden')],
     ['Cannot remove the last active admin', t('adminUsers.lastAdmin')],
@@ -65,6 +76,18 @@ export function translateBackendError(message: string, fallback?: string): strin
     ['Child age is not eligible for child tickets', t('validation.childAgeInvalid')],
     ['Name is required', t('validation.nameRequired')],
     ['Invalid phone number', t('validation.phoneInvalid')],
+    ['Combo must include at least 2 tours', t('backendErrors.comboMinTours', { defaultValue: 'Combo phải gồm ít nhất 2 tours' })],
+    ['Private tour is not available', t('backendErrors.privateNotAvailable', { defaultValue: 'Tour riêng hiện không khả dụng' })],
+    ['Payment not completed', t('backendErrors.paymentNotCompleted', { defaultValue: 'Thanh toán chưa hoàn tất' })],
+    ['Booking cannot be checked in', t('backendErrors.checkinFailed', { defaultValue: 'Không thể điểm danh booking này' })],
+    ['Invalid currency', t('backendErrors.invalidCurrency', { defaultValue: 'Loại tiền tệ không hợp lệ' })],
+    ['Access denied', t('backendErrors.accessDenied', { defaultValue: 'Không có quyền truy cập' })],
+    ['Hold no longer expired', t('bookings.holdExpired', { defaultValue: 'Giữ chỗ đã hết hạn hoặc đã thanh toán.' })],
+    ['Combo contains unavailable tour', t('backendErrors.comboUnavailable', { defaultValue: 'Combo có tour đã ngừng bán' })],
+    ['Ticket signature is invalid', t('verify.signatureInvalid', { defaultValue: 'Không hợp lệ — vé có thể bị giả mạo' })],
+    ['Push endpoint already registered', t('backendErrors.pushRegistered', { defaultValue: 'Thiết bị đã đăng ký ở tài khoản khác' })],
+    ['Message must be 1-2000 characters', t('bookings.messageLength', { defaultValue: 'Tin nhắn 1-2000 ký tự' })],
+    ['Question must be 5-1000 characters', t('bookings.questionLength', { defaultValue: 'Câu hỏi 5-1000 ký tự' })],
   ];
   for (const [key, value] of exact) {
     if (msg === key) return value;
@@ -93,6 +116,8 @@ export function translateBackendError(message: string, fallback?: string): strin
   if (minG) return t('backendErrors.guestsMin', { count: minG[1] });
   const maxG = msg.match(/^Tour allows at most (\d+) guest\(s\)$/);
   if (maxG) return t('backendErrors.guestsMax', { count: maxG[1] });
+  const couponG = msg.match(/^Coupon requires at least (\d+) guest\(s\)$/);
+  if (couponG) return t('backendErrors.couponMinGuests', { count: couponG[1], defaultValue: `Coupon yêu cầu tối thiểu ${couponG[1]} khách` });
 
   return fallback ?? msg;
 }

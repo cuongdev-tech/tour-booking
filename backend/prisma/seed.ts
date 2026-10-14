@@ -2124,7 +2124,7 @@ async function main() {
   const passwordHash = await bcrypt.hash('Admin123!', 10);
   await prisma.user.upsert({
     where: { email: 'admin@tourbooking.local' },
-    update: { passwordHash, role: 'ADMIN', name: 'Tour Booking Admin', status: 'ACTIVE' },
+    update: { passwordHash, role: 'ADMIN', name: 'Tour Booking Admin', status: 'ACTIVE', emailVerified: true },
     create: {
       email: 'admin@tourbooking.local',
       name: 'Tour Booking Admin',
@@ -2132,6 +2132,7 @@ async function main() {
       role: 'ADMIN',
       phone: '0900000001',
       status: 'ACTIVE',
+      emailVerified: true,
     },
   });
   console.log('Seeded admin: admin@tourbooking.local / Admin123! (dev only)');
@@ -2139,7 +2140,7 @@ async function main() {
   const customerHash = await bcrypt.hash('Customer123!', 10);
   await prisma.user.upsert({
     where: { email: 'customer@tourbooking.local' },
-    update: { passwordHash: customerHash, role: 'CUSTOMER', name: 'Demo Customer', status: 'ACTIVE' },
+    update: { passwordHash: customerHash, role: 'CUSTOMER', name: 'Demo Customer', status: 'ACTIVE', emailVerified: true },
     create: {
       email: 'customer@tourbooking.local',
       name: 'Demo Customer',
@@ -2147,6 +2148,7 @@ async function main() {
       role: 'CUSTOMER',
       phone: '0900000002',
       status: 'ACTIVE',
+      emailVerified: true,
     },
   });
   console.log('Seeded customer: customer@tourbooking.local / Customer123! (dev only)');

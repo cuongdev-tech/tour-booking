@@ -14,6 +14,7 @@ export const create = asyncHandler(async (req: Request, res: Response) => {
     req.body.rating,
     req.body.comment,
     req.body.images,
+    req.body.videos,
   );
   res.status(201).json({ review });
 });

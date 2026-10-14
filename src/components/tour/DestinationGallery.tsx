@@ -196,7 +196,8 @@ function DestinationLightbox({
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, multi]);
 
   return (
     <Modal open={open} onClose={onClose} label={name} wide>

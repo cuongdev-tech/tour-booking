@@ -5,7 +5,8 @@ import { api, apiErrorMessage } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { useEnumLabels } from '../../i18n/enums';
 import type { Pagination, User } from '../../types';
-import { Badge, RowAction, TableCard, TableEmpty, Td, Th } from '../../components/ui/kit';
+import { Badge, RowAction, Skeleton, TableCard, TableEmpty, Td, Th } from '../../components/ui/kit';
+import { RetryState } from '../../components/ui/kit';
 import { AdminPagination } from './Pagination';
 
 export function UsersManage() {
@@ -15,15 +16,24 @@ export function UsersManage() {
   const [users, setUsers] = useState<User[]>([]);
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<Pagination | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
 
-  const load = (p: number = page) =>
+  const load = (p: number = page) => {
+    setLoading(true);
+    setLoadFailed(false);
     api
       .get('/admin/users', { params: { page: p, limit: 10 } })
       .then((r) => {
         setUsers(r.data.data);
         setPagination(r.data.pagination);
       })
-      .catch((err) => toast.error(apiErrorMessage(err, t('adminUsers.loadFailed'))));
+      .catch((err) => {
+        setLoadFailed(true);
+        toast.error(apiErrorMessage(err, t('adminUsers.loadFailed')));
+      })
+      .finally(() => setLoading(false));
+  };
   useEffect(() => { void load(page); }, [page]);
 
   const update = async (id: string, data: { role?: string; status?: string }) => {
@@ -44,7 +54,12 @@ export function UsersManage() {
   return (
     <div>
     <TableCard>
-      <table className="w-full min-w-170 text-left">
+      {loading && users.length === 0 ? (
+        <div className="space-y-2 p-4"><Skeleton className="h-12" /><Skeleton className="h-12" /><Skeleton className="h-12" /></div>
+      ) : loadFailed && users.length === 0 ? (
+        <RetryState title={t('adminUsers.loadFailed')} onRetry={() => load()} retryLabel={t('common.retry')} />
+      ) : (
+        <table className="w-full min-w-170 text-left">
         <thead className="bg-slate-50">
           <tr><Th>{t('adminUsers.user')}</Th><Th>{t('adminUsers.role')}</Th><Th>{t('adminUsers.status')}</Th><Th right>{t('admin.actions')}</Th></tr>
         </thead>
@@ -71,6 +86,7 @@ export function UsersManage() {
           ))}
         </tbody>
       </table>
+      )}
     </TableCard>
     <AdminPagination pagination={pagination} onPage={setPage} />
     </div>

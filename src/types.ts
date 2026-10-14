@@ -10,6 +10,9 @@ export interface User {
   avatar: string | null;
   phone: string | null;
   status: 'ACTIVE' | 'INACTIVE';
+  emailVerified?: boolean;
+  loyaltyPoints?: number;
+  referralCode?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -57,8 +60,89 @@ export interface Tour {
   reviewCount: number;
   featured: boolean;
   status: 'ACTIVE' | 'INACTIVE';
+  departureHour?: number | null;
+  priceTiers?: PriceTier[];
+  privateAvailable?: boolean;
+  privateSurcharge?: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PriceTier {
+  id?: string;
+  minGuests: number;
+  maxGuests?: number | null;
+  price: number;
+  childPrice?: number | null;
+}
+
+export interface Combo {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  images: string[];
+  discountPercent: number;
+  status: 'ACTIVE' | 'INACTIVE';
+  featured?: boolean;
+  tourIds?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Post {
+  id: string;
+  slug: string;
+  title: string;
+  excerpt: string;
+  cover: string | null;
+  publishedAt: string | null;
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface PostDetail extends Post {
+  content: string;
+  tourIds: string[];
+}
+
+export interface TourQuestion {
+  id: string;
+  tourId: string;
+  userId?: string | null;
+  question: string;
+  answer: string | null;
+  answeredAt?: string | null;
+  hidden?: boolean;
+  createdAt: string;
+  updatedAt?: string;
+  user?: { id: string; name: string } | null;
+}
+
+export interface BookingMessage {
+  id: string;
+  bookingId: string;
+  senderId: string;
+  senderRole?: string;
+  body: string;
+  createdAt: string;
+  sender?: { id: string; name: string; role?: string } | null;
+}
+
+export interface ChatThread {
+  bookingId: string;
+  bookingCode: string;
+  lastAt: string | null;
+  lastMessage: { id: string; body: string } | string | null;
+  tour?: { id: string; title: string } | null;
+  customer?: { id: string; name: string; email?: string } | null;
+}
+
+export interface CancelPolicy {
+  freeCancelHours: number | null;
+  deadline: string | null;
+  refundable: boolean;
 }
 
 export type BookingStatus = 'PENDING' | 'CONFIRMED' | 'CANCELLED' | 'COMPLETED';
@@ -84,6 +168,8 @@ export interface Payment {
   status: PaymentStatus;
   transactionCode: string | null;
   paidAt: string | null;
+  gatewayRef?: string | null;
+  webhookVerified?: boolean;
   updatedAt: string;
 }
 
@@ -97,6 +183,11 @@ export interface Coupon {
   usageLimit: number | null;
   usedCount: number;
   active: boolean;
+  applicableTourIds?: string[];
+  applicableCategory?: string | null;
+  startsAt?: string | null;
+  maxDiscount?: number | null;
+  minGuests?: number;
 }
 
 export interface Booking {
@@ -119,6 +210,25 @@ export interface Booking {
   subtotal: number;
   discount: number;
   total: number;
+  /** Unit-price snapshot at booking time (null on legacy rows). */
+  adultUnitPrice?: number | null;
+  childUnitPrice?: number | null;
+  loyaltyUsed?: number;
+  loyaltyDiscount?: number;
+  holdExpiresAt?: string | null;
+  cancelReason?: string | null;
+  isPrivate?: boolean;
+  privateSurcharge?: number;
+  comboId?: string | null;
+  comboGroup?: string | null;
+  currency?: string;
+  vatAmount?: number;
+  vatName?: string | null;
+  vatTaxCode?: string | null;
+  vatAddress?: string | null;
+  vatEmail?: string | null;
+  ticketSignature?: string | null;
+  checkedInAt?: string | null;
   bookingStatus: BookingStatus;
   createdAt: string;
   updatedAt: string;
@@ -137,6 +247,8 @@ export interface Review {
   rating: number;
   comment: string | null;
   images: string[];
+  videos?: string[];
+  verifiedTrip?: boolean;
   helpfulCount: number;
   hidden?: boolean;
   adminReply?: string | null;

@@ -17,9 +17,12 @@ export function Destinations() {
   const [rows, setRows] = useState<DestinationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     const ctrl = new AbortController();
+    setLoading(true);
+    setError('');
     api
       .get('/tours/destinations', { signal: ctrl.signal })
       .then((res) => setRows(res.data.data ?? []))
@@ -31,7 +34,8 @@ export function Destinations() {
         if (!ctrl.signal.aborted) setLoading(false);
       });
     return () => ctrl.abort();
-  }, [t]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [t, attempt]);
 
   return (
     <PageContainer size="wide" className="py-8 md:py-12">
@@ -47,7 +51,7 @@ export function Destinations() {
         </div>
       ) : error ? (
         <div className="mt-8">
-          <RetryState title={t('tours.loadError')} hint={error} onRetry={() => window.location.reload()} retryLabel={t('tours.retry')} />
+          <RetryState title={t('tours.loadError')} hint={error} onRetry={() => setAttempt((a) => a + 1)} retryLabel={t('tours.retry')} />
         </div>
       ) : rows.length === 0 ? (
         <div className="mt-8">

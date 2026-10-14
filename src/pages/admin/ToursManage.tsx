@@ -18,9 +18,13 @@ interface TourDateRow {
   date: string;
   capacity: number;
   booked: number;
+  guideId?: string | null;
+  vehicleId?: string | null;
+  guide?: { id: string; name: string } | null;
+  vehicle?: { id: string; plate: string; seats: number } | null;
 }
 
-const empty = { title: '', departureLocation: '', destination: '', category: 'Beach', duration: '', price: 2000000, childPrice: NaN, childMaxAge: NaN, freeCancelHours: NaN, minGuests: 1, maxGuests: 20, availableSeats: 20, featured: false, status: 'ACTIVE', description: '', images: '', transportation: [] as string[], includedServices: '', excludedServices: '' };
+const empty = { title: '', departureLocation: '', destination: '', category: 'Beach', duration: '', price: 2000000, childPrice: NaN, childMaxAge: NaN, freeCancelHours: NaN, departureHour: NaN, minGuests: 1, maxGuests: 20, availableSeats: 20, featured: false, status: 'ACTIVE', description: '', images: '', transportation: [] as string[], includedServices: '', excludedServices: '' };
 
 const TRANSPORT_MODES = ['Flight', 'Bus', 'Coach', 'PrivateCar', 'LocalTransfer', 'Cruise'];
 
@@ -76,9 +80,17 @@ export function ToursManage() {
   const q = useDebounce(qInput, 300);
   const [itinerary, setItinerary] = useState<TourItineraryDay[]>(blankItinerary());
   const [addons, setAddons] = useState<AddonDraft[]>(blankAddons());
+  interface TierDraft { minGuests: number; price: number; childPrice: number; }
+  const [tiers, setTiers] = useState<TierDraft[]>([]);
+  const [privateAvailable, setPrivateAvailable] = useState(false);
+  const [privateSurcharge, setPrivateSurcharge] = useState(0);
   const [tourDates, setTourDates] = useState<TourDateRow[]>([]);
   const [newDate, setNewDate] = useState('');
   const [newCapacity, setNewCapacity] = useState(20);
+  const [newGuideId, setNewGuideId] = useState('');
+  const [newVehicleId, setNewVehicleId] = useState('');
+  const [guides, setGuides] = useState<Array<{ id: string; name: string }>>([]);
+  const [vehicles, setVehicles] = useState<Array<{ id: string; plate: string; seats: number }>>([]);
   const [deleteDateId, setDeleteDateId] = useState<string | null>(null);
   const editingIdRef = useRef<string | null>(null);
   const { register, handleSubmit, reset } = useForm({ defaultValues: empty });
@@ -91,8 +103,20 @@ export function ToursManage() {
         setPagination(r.data.pagination);
       })
       .catch((err) => toast.error(apiErrorMessage(err, t('adminTours.loadFailed'))));
-  useEffect(() => { setPage(1); }, [q]);
-  useEffect(() => { void load(page, q); }, [page, q]);
+  // When the keyword changes, reset to page 1 (which triggers the load below).
+  // When already on page 1, load directly — never fire both with a stale page.
+  // The first run is skipped: the page effect covers the initial mount.
+  const firstQ = useRef(true);
+  useEffect(() => {
+    if (firstQ.current) {
+      firstQ.current = false;
+      return;
+    }
+    if (page === 1) void load(1, q);
+    else setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q]);
+  useEffect(() => { void load(page, q); /* eslint-disable-line react-hooks/exhaustive-deps */ }, [page]);
 
   const openCreate = () => {
     setEditing(null);
@@ -101,7 +125,12 @@ export function ToursManage() {
     reset(empty);
     setItinerary(blankItinerary());
     setAddons(blankAddons());
+    setTiers([]);
+    setPrivateAvailable(false);
+    setPrivateSurcharge(0);
     setTourDates([]);
+    setNewGuideId('');
+    setNewVehicleId('');
   };
   const loadTourDates = async (tourId: string) => {
     try {
@@ -111,6 +140,13 @@ export function ToursManage() {
     } catch (err) {
       toast.error(apiErrorMessage(err, t('adminTours.loadFailed')));
     }
+    try {
+      const [g, v] = await Promise.all([api.get('/admin/guides'), api.get('/admin/vehicles')]);
+      setGuides(g.data.data);
+      setVehicles(v.data.data);
+    } catch {
+      /* fleet optional */
+    }
   };
   const openEdit = (tour: Tour) => {
     setCreating(false);
@@ -119,10 +155,13 @@ export function ToursManage() {
     setTourDates([]);
     setNewDate('');
     setNewCapacity(20);
+    setNewGuideId('');
+    setNewVehicleId('');
     void loadTourDates(tour.id);
     reset({
       title: tour.title, departureLocation: tour.departureLocation, destination: tour.destination, category: tour.category, duration: tour.duration,
       price: tour.price, childPrice: tour.childPrice ?? NaN, childMaxAge: tour.childMaxAge ?? NaN, freeCancelHours: tour.freeCancelHours ?? NaN,
+      departureHour: tour.departureHour ?? NaN,
       minGuests: tour.minGuests, maxGuests: tour.maxGuests, availableSeats: tour.availableSeats, featured: tour.featured, status: tour.status,
       description: tour.description, images: tour.images.join('\n'),
       transportation: tour.transportation,
@@ -136,6 +175,15 @@ export function ToursManage() {
         perPerson: Boolean(a?.perPerson),
       })),
     );
+    setTiers(
+      (Array.isArray(tour.priceTiers) ? tour.priceTiers : []).map((tier) => ({
+        minGuests: Number(tier?.minGuests) || 1,
+        price: Number(tier?.price) || 0,
+        childPrice: Number(tier?.childPrice) || 0,
+      })),
+    );
+    setPrivateAvailable(Boolean(tour.privateAvailable));
+    setPrivateSurcharge(Number(tour.privateSurcharge) || 0);
     const days = Array.isArray(tour.itinerary) && tour.itinerary.length > 0 ? tour.itinerary : blankItinerary();
     setItinerary(normalizeItinerary(days.map((d) => ({ ...d, activities: d.activities.length > 0 ? [...d.activities] : [''] }))));
   };
@@ -145,9 +193,16 @@ export function ToursManage() {
   const addTourDate = async () => {
     if (!editing || !newDate) return;
     try {
-      await api.post(`/admin/tours/${editing.id}/dates`, { date: newDate, capacity: Number(newCapacity) || 1 });
+      await api.post(`/admin/tours/${editing.id}/dates`, {
+        date: newDate,
+        capacity: Number(newCapacity) || 1,
+        guideId: newGuideId || null,
+        vehicleId: newVehicleId || null,
+      });
       toast.success(t('adminTours.saved'));
       setNewDate('');
+      setNewGuideId('');
+      setNewVehicleId('');
       await loadTourDates(editing.id);
     } catch (err) {
       toast.error(apiErrorMessage(err, t('adminTours.saveFailed')));
@@ -209,6 +264,25 @@ export function ToursManage() {
     }
     const freeCancelRaw = Number(v.freeCancelHours);
     const freeCancelHours = Number.isFinite(freeCancelRaw) && freeCancelRaw >= 1 ? Math.floor(freeCancelRaw) : null;
+    // Tiered group pricing: ascending unique thresholds, positive prices.
+    const tierPayload = tiers
+      .map((tier) => ({
+        minGuests: Math.floor(Number(tier.minGuests)),
+        price: Math.floor(Number(tier.price)),
+        ...(Number(tier.childPrice) > 0 ? { childPrice: Math.floor(Number(tier.childPrice)) } : {}),
+      }))
+      .filter((tier) => Number.isFinite(tier.minGuests) && tier.minGuests >= 1 && Number.isFinite(tier.price) && tier.price > 0)
+      .sort((a, b) => a.minGuests - b.minGuests)
+      .filter((tier, i, arr) => i === 0 || tier.minGuests !== arr[i - 1].minGuests);
+    for (const tier of tierPayload) {
+      if (tier.childPrice != null && tier.childPrice >= tier.price) {
+        toast.error(t('adminTours.saveFailed'));
+        return;
+      }
+    }
+    const surcharge = Math.max(0, Math.floor(Number(privateSurcharge)) || 0);
+    const depHourRaw = Number((v as { departureHour?: unknown }).departureHour);
+    const departureHour = Number.isFinite(depHourRaw) && depHourRaw >= 0 && depHourRaw <= 23 ? Math.floor(depHourRaw) : null;
     // Add-ons: ids derived from names (stable across edits while names stay).
     const taken = new Set<string>();
     const addonPayload: Array<{ id: string; name: string; price: number; perPerson: boolean }> = [];
@@ -231,6 +305,10 @@ export function ToursManage() {
       childPrice,
       childMaxAge,
       freeCancelHours,
+      departureHour,
+      priceTiers: tierPayload,
+      privateAvailable,
+      privateSurcharge: privateAvailable ? surcharge : 0,
       addons: addonPayload,
       minGuests: Math.max(1, Number(v.minGuests) || 1),
       maxGuests: Math.max(Number(v.minGuests) || 1, Number(v.maxGuests) || 20),
@@ -324,9 +402,54 @@ export function ToursManage() {
             <Field label={t('adminTours.freeCancelHours', { defaultValue: 'Hủy miễn phí trước (giờ)' }) as string} hint={t('adminTours.freeCancelHint', { defaultValue: 'Trống = linh hoạt đến ngày đi' }) as string}>
               <Input type="number" min={1} max={720} {...register('freeCancelHours', { valueAsNumber: true })} />
             </Field>
+            <Field label="Giờ khởi hành (0-23)" hint="Để sort giờ KH sớm nhất">
+              <Input type="number" min={0} max={23} {...register('departureHour', { valueAsNumber: true })} />
+            </Field>
             <Field label={t('adminTours.minGuests')}><Input type="number" min={1} {...register('minGuests', { valueAsNumber: true })} /></Field>
             <Field label={t('adminTours.maxGuests')}><Input type="number" min={1} max={100} {...register('maxGuests', { valueAsNumber: true })} /></Field>
             <Field label={t('adminTours.seats')}><Input type="number" {...register('availableSeats', { valueAsNumber: true })} /></Field>
+            <div className="md:col-span-2 rounded-2xl border border-slate-200 p-4">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-slate-700">Giá theo đoàn (tùy chọn)</span>
+                <Button type="button" variant="secondary" onClick={() => setTiers((prev) => [...prev, { minGuests: 4, price: 0, childPrice: 0 }])}>
+                  + Thêm mốc
+                </Button>
+              </div>
+              {tiers.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-400">Trống = dùng giá chuẩn cho mọi số khách.</p>
+              ) : (
+                <div className="mt-3 space-y-2">
+                  {tiers.map((tier, i) => (
+                    <div key={i} className="flex flex-wrap items-end gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-slate-500">Từ (khách)</span>
+                        <Input type="number" min={1} value={tier.minGuests} onChange={(e) => setTiers((prev) => prev.map((x, j) => (j === i ? { ...x, minGuests: Number(e.target.value) } : x)))} className="w-24" />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-slate-500">Giá NL</span>
+                        <Input type="number" min={1} value={tier.price || ''} onChange={(e) => setTiers((prev) => prev.map((x, j) => (j === i ? { ...x, price: Number(e.target.value) } : x)))} className="w-32" />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-slate-500">Giá TE (trống = chung)</span>
+                        <Input type="number" min={0} value={tier.childPrice || ''} onChange={(e) => setTiers((prev) => prev.map((x, j) => (j === i ? { ...x, childPrice: Number(e.target.value) } : x)))} className="w-32" />
+                      </label>
+                      <Button type="button" variant="ghost" onClick={() => setTiers((prev) => prev.filter((_, j) => j !== i))}>Xóa</Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <label className="mt-3 flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" checked={privateAvailable} onChange={(e) => setPrivateAvailable(e.target.checked)} className="h-4 w-4 rounded border-slate-300 accent-orange-700" />
+                Cho đi riêng đoàn
+              </label>
+              {privateAvailable && (
+                <div className="mt-2 max-w-56">
+                  <Field label="Phụ thu đi riêng (VND)">
+                    <Input type="number" min={0} value={privateSurcharge || ''} onChange={(e) => setPrivateSurcharge(Number(e.target.value))} />
+                  </Field>
+                </div>
+              )}
+            </div>
             {editing && (
               <div className="md:col-span-2">
                 <span className="mb-1.5 block text-sm font-medium text-slate-700">{t('adminTours.dates')}</span>
@@ -335,8 +458,9 @@ export function ToursManage() {
                     <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">{t('tours.emptyTitle')}</p>
                   )}
                   {tourDates.map((d) => (
-                    <div key={d.id} className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm">
+                    <div key={d.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm">
                       <span className="tabular-nums text-slate-900">{formatDateStr(d.date)}</span>
+                      <span className="text-xs text-slate-500">{d.guide?.name ?? '—'} · {d.vehicle ? `${d.vehicle.plate} (${d.vehicle.seats})` : '—'}</span>
                       <span className="flex items-center gap-2 text-xs tabular-nums text-slate-500">
                         {d.booked}/{d.capacity}
                         <RowAction tone="red" onClick={() => setDeleteDateId(d.id)}>{t('adminTours.delete')}</RowAction>
@@ -351,6 +475,20 @@ export function ToursManage() {
                     <label className="block">
                       <span className="mb-1 block text-xs font-medium text-slate-500">{t('adminTours.capacity')}</span>
                       <Input type="number" min={1} value={newCapacity} onChange={(e) => setNewCapacity(Number(e.target.value))} className="w-24" />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-slate-500">HDV</span>
+                      <Select value={newGuideId} onChange={(e) => setNewGuideId(e.target.value)} className="w-36">
+                        <option value="">—</option>
+                        {guides.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                      </Select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium text-slate-500">Xe</span>
+                      <Select value={newVehicleId} onChange={(e) => setNewVehicleId(e.target.value)} className="w-36">
+                        <option value="">—</option>
+                        {vehicles.map((v) => <option key={v.id} value={v.id}>{v.plate} ({v.seats})</option>)}
+                      </Select>
                     </label>
                     <Button type="button" variant="secondary" onClick={() => void addTourDate()} disabled={!newDate}>
                       {t('adminTours.addDate')}

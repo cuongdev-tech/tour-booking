@@ -7,8 +7,8 @@ import type { User } from '../types';
 interface AuthState {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (data: { name: string; email: string; password: string; phone?: string }) => Promise<void>;
+  login: (email: string, password: string) => Promise<User>;
+  register: (data: { name: string; email: string; password: string; phone?: string; referralCode?: string }) => Promise<User>;
   logout: () => void;
   refresh: () => Promise<void>;
   updateProfile: (data: { name?: string; phone?: string }) => Promise<void>;
@@ -32,20 +32,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(data.user);
     } catch (err) {
       // Only drop the session when the server rejects the token (401/403).
-      // A transient network/5xx failure retries once before giving up, so a
-      // blip at mount doesn't kick a valid user to the login page.
+      // Transient network/5xx retries once before giving up, so a blip at
+      // mount doesn't kick a valid user to the login page. Other errors keep
+      // the token (no delete) so a later refresh can recover.
       if (axios.isAxiosError(err) && err.response && (err.response.status === 401 || err.response.status === 403)) {
         localStorage.removeItem('tourbooking_token');
         setUser(null);
-      } else if (axios.isAxiosError(err) && !err.response) {
+      } else {
         await new Promise((r) => window.setTimeout(r, 1500));
         try {
           const { data } = await api.get('/auth/me');
           setUser(data.user);
           return;
-        } catch {
-          // Still offline — stay logged out visually but keep the token so a
-          // later refresh can recover the session without re-login.
+        } catch (err2) {
+          if (
+            axios.isAxiosError(err2) &&
+            err2.response &&
+            (err2.response.status === 401 || err2.response.status === 403)
+          ) {
+            localStorage.removeItem('tourbooking_token');
+            setUser(null);
+          }
+          // Still offline/5xx — stay logged out visually but keep the token so
+          // a later refresh can recover the session without re-login.
         }
       }
     } finally {
@@ -66,18 +75,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
-    const { data } = await api.post('/auth/login', { email, password });
+    const { data } = await api.post('/auth/login', { email: email.trim(), password });
     localStorage.setItem('tourbooking_token', data.token);
     setUser(data.user);
+    return data.user as User;
   }, []);
 
-  const register = useCallback(async (input: { name: string; email: string; password: string; phone?: string }) => {
-    const { data } = await api.post('/auth/register', input);
+  const register = useCallback(async (input: { name: string; email: string; password: string; phone?: string; referralCode?: string }) => {
+    const { data } = await api.post('/auth/register', { ...input, email: input.email.trim() });
     localStorage.setItem('tourbooking_token', data.token);
     setUser(data.user);
+    return data.user as User;
   }, []);
 
   const logout = useCallback(() => {
+    const token = localStorage.getItem('tourbooking_token');
+    if (token) {
+      api.post('/auth/logout').catch(() => undefined);
+    }
     localStorage.removeItem('tourbooking_token');
     setUser(null);
   }, []);

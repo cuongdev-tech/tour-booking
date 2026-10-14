@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import axios from 'axios';
 import { BadgeCheck, ShieldAlert } from 'lucide-react';
@@ -26,9 +26,13 @@ interface PublicTicket {
 export function VerifyBooking() {
   const { t } = useTranslation();
   const { code } = useParams();
+  const [searchParams] = useSearchParams();
+  const sig = searchParams.get('t');
   const [ticket, setTicket] = useState<PublicTicket | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [signatureValid, setSignatureValid] = useState<boolean | null>(null);
+  const [checkedInAt, setCheckedInAt] = useState<string | null>(null);
   useDocumentMeta(t('verify.title', { defaultValue: 'Xác thực vé' }) as string);
 
   useEffect(() => {
@@ -36,19 +40,39 @@ export function VerifyBooking() {
     const ctrl = new AbortController();
     setLoading(true);
     setFailed(false);
-    api
-      .get(`/bookings/public/${encodeURIComponent(code)}`, { signal: ctrl.signal })
-      .then((res) => setTicket(res.data.ticket))
-      .catch((err) => {
-        if (axios.isAxiosError(err) && err.code === 'ERR_CANCELED') return;
-        setTicket(null);
-        setFailed(true);
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false);
-      });
+    setSignatureValid(null);
+    setCheckedInAt(null);
+    if (sig) {
+      api
+        .get('/tickets/verify', { params: { code, t: sig }, signal: ctrl.signal })
+        .then((res) => {
+          setTicket(res.data.ticket);
+          setSignatureValid(res.data.signatureValid === true);
+          setCheckedInAt(res.data.checkedInAt ?? null);
+        })
+        .catch((err) => {
+          if (axios.isAxiosError(err) && err.code === 'ERR_CANCELED') return;
+          setTicket(null);
+          setFailed(true);
+        })
+        .finally(() => {
+          if (!ctrl.signal.aborted) setLoading(false);
+        });
+    } else {
+      api
+        .get(`/bookings/public/${encodeURIComponent(code)}`, { signal: ctrl.signal })
+        .then((res) => setTicket(res.data.ticket))
+        .catch((err) => {
+          if (axios.isAxiosError(err) && err.code === 'ERR_CANCELED') return;
+          setTicket(null);
+          setFailed(true);
+        })
+        .finally(() => {
+          if (!ctrl.signal.aborted) setLoading(false);
+        });
+    }
     return () => ctrl.abort();
-  }, [code]);
+  }, [code, sig]);
 
   if (loading) return <PageContainer className="max-w-2xl py-10"><Skeleton className="h-80" /></PageContainer>;
   if (failed || !ticket) {
@@ -73,8 +97,10 @@ export function VerifyBooking() {
   const paymentOk = ticket.payment?.status === 'PAID' || ticket.payment?.method === 'CASH';
   // Quét QR ra chuyến đi: vé chỉ "hợp lệ" khi booking còn hiệu lực VÀ đã trả tiền
   // (tiền mặt trả tại điểm đón nên luôn ok). Thẻ/chuyển khoản chưa trả → báo riêng.
-  const valid = bookingOk && paymentOk;
-  const needPayment = bookingOk && !paymentOk;
+  // QR có chữ ký mà verify fail → vé giả: fail-closed, luôn đỏ.
+  const sigInvalid = sig != null && sig !== '' && signatureValid === false;
+  const valid = bookingOk && paymentOk && !sigInvalid;
+  const needPayment = bookingOk && !paymentOk && !sigInvalid;
 
   return (
     <PageContainer className="max-w-2xl py-10 md:py-12">
@@ -112,8 +138,8 @@ export function VerifyBooking() {
           <div className="flex items-center justify-between gap-3">
             <dt className="text-slate-500">{t('bookingSuccess.guests')}</dt>
             <dd className="tabular-nums text-slate-900">
-              {t('bookings.guestsSuffix', { count: ticket.guests })}
-              {ticket.children > 0 && ` (${ticket.adults} NL · ${ticket.children} TE)`}
+              {t('bookings.guestsSuffix', { count: ticket.guests ?? 0 })}
+              {(ticket.children ?? 0) > 0 && ` (${ticket.adults ?? 0} NL · ${ticket.children ?? 0} TE)`}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-3">
@@ -124,6 +150,26 @@ export function VerifyBooking() {
             <dt className="text-slate-500">{t('bookingSuccess.payment')}</dt>
             <dd><StatusBadge status={ticket.payment?.status ?? 'PENDING'} /></dd>
           </div>
+          {sig && (
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-slate-500">{t('verify.signature', { defaultValue: 'Chữ ký vé' }) as string}</dt>
+              <dd className={`font-semibold ${signatureValid === true ? 'text-emerald-600' : signatureValid === false ? 'text-red-600' : 'text-slate-500'}`}>
+                {signatureValid === true
+                  ? (t('verify.signatureValid', { defaultValue: 'Hợp lệ' }) as string)
+                  : signatureValid === false
+                    ? (t('verify.signatureInvalid', { defaultValue: 'Không hợp lệ — vé có thể bị giả mạo' }) as string)
+                    : (t('verify.signatureUnknown', { defaultValue: 'Không xác định' }) as string)}
+              </dd>
+            </div>
+          )}
+          {checkedInAt && (
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-slate-500">{t('verify.checkedIn', { defaultValue: 'Điểm danh' }) as string}</dt>
+              <dd className="tabular-nums text-slate-900">
+                {(t('verify.checkedInAt', { defaultValue: 'Đã điểm danh lúc {{time}}', time: formatDateStr(checkedInAt) }) as string)}
+              </dd>
+            </div>
+          )}
         </dl>
         <p className="mt-3 text-center text-xs text-slate-400">
           {t('verify.operatorHint', { defaultValue: 'Đối chiếu mã booking + ngày đi + số khách với danh sách đoàn.' }) as string}
